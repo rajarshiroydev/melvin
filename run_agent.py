@@ -1,12 +1,16 @@
+import re
 import yaml
 import importlib
 import subprocess
 import argparse
 import json
 import sys
+import asyncio
+import time
 
 from pathlib import Path
-from agents.modality_detector import collect_dataset_metadata, detect_modality_llm
+from code_generator import generate_training_script_llm
+from modality_detector import collect_dataset_metadata, detect_modality_llm
 
 
 class MLEAgent:
@@ -74,38 +78,136 @@ class MLEAgent:
     # ----------------------------------------------------------------------
     # STEP 2 — DETECT TASK/MODALITY
     # ----------------------------------------------------------------------
-    def detect(self):
+    def full_detect(self):
         metadata = collect_dataset_metadata(self.prepared_public)
-        result = detect_modality_llm(metadata)
-        self.log({"step": "modality_detection", "result": result})
-        return result
+        result = asyncio.run(detect_modality_llm(metadata))
+
+        self.log({"step": "modality_detection", "metadata": metadata, "result": result})
+
+        return (
+            result["modality"],
+            result["task_type"],
+            result["target_col"],
+            result.get("classes", []),
+            metadata,
+        )
 
     # ----------------------------------------------------------------------
     # STEP 3 — GENERATE TRAINING CODE
     # ----------------------------------------------------------------------
-    def generate_training_code(self, modality, task_type):
-        print("[INFO] Generating training script...")
+    def full_codegen(self, modality, task_type, target_col, classes, metadata):
+        script_path = self.output_dir / "generated_train_script.py"
 
-        train_script_path = self.output_dir / "generated_train_script.py"
+        asyncio.run(
+            generate_training_script_llm(
+                modality=modality,
+                task_type=task_type,
+                target_col=target_col,
+                classes=classes,
+                metadata=metadata,
+                output_path=script_path,
+            )
+        )
 
-        # placeholder — we will fill this in after skeleton
-        code = """
-        # Auto-generated training script
-        # print("Training script placeholder. Will be filled in later.")
+        print(f"[INFO] Training script generated: {script_path}")
+
+        return script_path
+
+    # ----------------------------------------------------------------------
+    # HELPER: PACKAGE MAPPING
+    # ----------------------------------------------------------------------
+    @property
+    def package_mapping(self):
         """
-
-        train_script_path.write_text(code)
-        print(f"[INFO] Training script saved to {train_script_path}")
-
-        return train_script_path
+        Maps import names (module names) to PyPI package names.
+        Add to this list as you discover more edge cases.
+        """
+        return {
+            "sklearn": "scikit-learn",
+            "cv2": "opencv-python",
+            "PIL": "Pillow",
+            "yaml": "PyYAML",
+            "bs4": "beautifulsoup4",
+            "skimage": "scikit-image",
+            "protobuf": "protobuf",  # frequent confusion with google.protobuf
+            "google.protobuf": "protobuf",
+            "fitz": "pymupdf",
+            "usb": "pyusb",
+            "serial": "pyserial",
+            "dotenv": "python-dotenv",
+            "dateutil": "python-dateutil",
+            "docx": "python-docx",
+            "ppt": "python-pptx",
+            "jq": "jq",
+            "dns": "dnspython",
+            "jwt": "pyjwt",
+            "kafka": "kafka-python",
+            "multipart": "python-multipart",
+            "xgboost": "xgboost",
+            "lxml": "lxml",
+            "crypto": "pycryptodome",  # Common confusion, 'pycrypto' is dead
+            "Crypto": "pycryptodome",
+        }
 
     # ----------------------------------------------------------------------
     # STEP 4 — RUN TRAINING SCRIPT (subprocess)
     # ----------------------------------------------------------------------
     def run_training_script(self, script_path):
         print("[INFO] Running training script...")
-        subprocess.run([sys.executable, str(script_path)], check=True)
-        print("[INFO] Training script executed successfully.")
+
+        max_retries = 5
+
+        for attempt in range(max_retries):
+            try:
+                # Run with uv directly using 'uv run' is often cleaner,
+                # but sticking to your current venv python approach:
+                result = subprocess.run(
+                    [sys.executable, str(script_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                print(result.stdout)
+                print("[INFO] Training script executed successfully.")
+                return
+
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr
+                print(e.stdout)
+                print(error_output, file=sys.stderr)
+
+                missing_module = self.extract_missing_module(error_output)
+
+                if missing_module:
+                    # CHECK MAPPING HERE
+                    package_to_install = self.package_mapping.get(
+                        missing_module, missing_module
+                    )
+
+                    print(f"[WARN] Missing module: '{missing_module}'")
+                    if package_to_install != missing_module:
+                        print(f"       Mapped to package: '{package_to_install}'")
+
+                    print(f"       Installing {package_to_install}...")
+
+                    # FIX: Use "uv" directly, not "sys.executable -m uv"
+                    # Using 'uv pip install' is safer for existing venvs than 'uv add'
+                    # unless you are strictly managing a pyproject.toml
+                    install_cmd = ["uv", "pip", "install", package_to_install]
+
+                    try:
+                        subprocess.run(install_cmd, check=True)
+                        print(f"[INFO] Installed {package_to_install} successfully.")
+                        continue  # Retry the loop
+                    except Exception as inst_err:
+                        print(
+                            f"[ERROR] Failed to install {package_to_install}: {inst_err}"
+                        )
+                        raise inst_err
+
+                raise e
+
+        raise RuntimeError("Training script failed too many times.")
 
     # ----------------------------------------------------------------------
     # STEP 5 — GRADE SUBMISSION (optional during dev)
@@ -135,14 +237,44 @@ class MLEAgent:
 
         return score
 
+    # ------------------------------------------------------
+    # LOGGING (Reasoning Trace)
+    # ------------------------------------------------------
+    def log(self, entry: dict):
+        """Append a JSON reasoning log entry into agent_output directory."""
+
+        log_path = self.output_dir / "reasoning_log.jsonl"
+        entry_with_time = {"timestamp": time.time(), **entry}
+
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry_with_time) + "\n")
+
+    # ------------------------------------------------------
+    # Missing Module Detector
+    # ------------------------------------------------------
+    def extract_missing_module(self, error_msg: str):
+        match = re.search(r"No module named '(.+?)'", error_msg)
+        return match.group(1) if match else None
+
     # ----------------------------------------------------------------------
     # RUN EVERYTHING
     # ----------------------------------------------------------------------
     def run(self):
+        # Step 1: Prepare dataset
         self.prepare_data()
-        modality, task_type = self.detect_task()
-        script_path = self.generate_training_code(modality, task_type)
+
+        # Step 2: Detect modality/task
+        modality, task_type, target_col, classes, metadata = self.full_detect()
+
+        # Step 3: Generate training script
+        script_path = self.full_codegen(
+            modality, task_type, target_col, classes, metadata
+        )
+
+        # Step 4: Execute training script
         self.run_training_script(script_path)
+
+        # Step 5: Grade submission
         self.grade_submission()
 
 
