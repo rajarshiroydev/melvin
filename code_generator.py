@@ -21,11 +21,12 @@ class CodegenState(dict):
     target_col: str
     classes: list
     metadata: dict
+    dataset_dir: str
     script: str
 
 
 # ---------------------------------------------------------
-# NODE: Gemini 2.5 Flash — Full Script Generator (One LLM Call)
+# NODE: Gemini 2.5 Flash — Full Script Generator
 # ---------------------------------------------------------
 def llm_script_generator(state: CodegenState):
     modality = state["modality"]
@@ -33,59 +34,66 @@ def llm_script_generator(state: CodegenState):
     target_col = state["target_col"]
     classes = state.get("classes", [])
     metadata = state["metadata"]
+    dataset_dir = state["dataset_dir"]
 
     prompt = f"""
-You are an advanced ML engineering agent.
-Your job is to generate a FULL, SELF-CONTAINED Python training script.
+    You are an advanced ML engineering agent.
+    Your job is to generate a FULL, SELF-CONTAINED Python training script.
 
-The script MUST:
-- load train.csv, test.csv, sample_submission.csv from current directory
-- use {modality} + {task_type} to decide model and preprocessing
-- use target_col = "{target_col}"
-- handle classes = {classes}
-- fit a model
-- generate predictions
-- write submission.csv in correct sample_submission format
-- run WITHOUT modification
-- contain all imports
-- NO placeholders
-- Python ONLY
-- DO NOT wrap in backticks
-- DO NOT explain anything
-- ONLY output executable Python code
+    DATASET LOCATION:
+    The dataset files (train.csv, test.csv, sample_submission.csv) are located at:
+    "{dataset_dir}"
 
-Dataset metadata:
-{json.dumps(metadata, indent=2)}
+    The script MUST:
+    - Import os and Path
+    - Construct file paths using the provided DATASET LOCATION.
+    - Load train.csv, test.csv, sample_submission.csv using those absolute paths.
+    - use {modality} + {task_type} to decide model and preprocessing
+    - use target_col = "{target_col}"
+    - handle classes = {classes}
+    - fit a model
+    - generate predictions
+    - write "submission.csv" to the CURRENT working directory (do not use the dataset path for output).
+    - run WITHOUT modification
+    - contain all imports
+    - NO placeholders
+    - Python ONLY
+    - DO NOT wrap in backticks
+    - DO NOT explain anything
+    - ONLY output executable Python code
 
-Follow these model rules:
+    Dataset metadata:
+    {json.dumps(metadata, indent=2)}
 
-TEXT CLASSIFICATION:
-- Use TfidfVectorizer + LogisticRegression (sklearn)
+    Follow these model rules:
 
-TABULAR CLASSIFICATION:
-- Use LightGBM OR RandomForestClassifier
+    TEXT CLASSIFICATION:
+    - Use TfidfVectorizer + LogisticRegression (sklearn)
 
-TABULAR REGRESSION:
-- Use LightGBM OR RandomForestRegressor
+    TABULAR CLASSIFICATION:
+    - Use LightGBM OR RandomForestClassifier
 
-SEQ2SEQ (text normalization):
-- Use transformers (T5-small)
-- Tokenize input/output columns
-- Predict normalized text
-- Produce submission file
+    TABULAR REGRESSION:
+    - Use LightGBM OR RandomForestRegressor
 
-IMAGE CLASSIFICATION:
-- Use torchvision (ResNet18)
-- Standard transforms, DataLoader
+    SEQ2SEQ (text normalization):
+    - Use transformers (T5-small)
+    - Tokenize input/output columns
+    - Predict normalized text
+    - Produce submission file
 
-AUDIO CLASSIFICATION:
-- Use torchaudio, CNN-based classifier
+    IMAGE CLASSIFICATION:
+    - Use torchvision (ResNet18)
+    - Standard transforms, DataLoader
 
-Remember:
-- You MUST write submission.csv
-- Column order MUST match sample_submission.csv
-- Ensure probabilities sum to 1 for classification
-"""
+    AUDIO CLASSIFICATION:
+    - Use torchaudio, CNN-based classifier
+
+    Remember:
+    - You MUST write submission.csv
+    - Column order MUST match sample_submission.csv
+    - Ensure probabilities sum to 1 for classification
+    """
 
     response = completion(
         model="gemini/gemini-2.5-flash",
@@ -96,7 +104,6 @@ Remember:
 
     raw_script = response["choices"][0]["message"]["content"]
 
-    # Remove accidental ``` python fences
     if raw_script.strip().startswith("```"):
         raw_script = raw_script.replace("```python", "").replace("```", "").strip()
 
@@ -119,8 +126,11 @@ def build_graph():
 # Public API: generate training script file
 # ---------------------------------------------------------
 async def generate_training_script_llm(
-    modality, task_type, target_col, classes, metadata, output_path: Path
+    modality, task_type, target_col, classes, metadata, dataset_dir, output_path: Path
 ):
+    # Convert path to string for JSON/Prompt safety
+    dataset_dir_str = str(dataset_dir.resolve())
+
     graph = build_graph()
     final_state = await graph.ainvoke(
         {
@@ -129,11 +139,11 @@ async def generate_training_script_llm(
             "target_col": target_col,
             "classes": classes,
             "metadata": metadata,
+            "dataset_dir": dataset_dir_str,  # <--- PASS TO GRAPH
         }
     )
 
     script = final_state["script"]
-
     output_path.write_text(script)
 
     return output_path
