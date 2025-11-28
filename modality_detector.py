@@ -17,9 +17,9 @@ load_dotenv()
 # Dataset Metadata Collector (sync, deterministic)
 # ---------------------------------------------------------
 def collect_dataset_metadata(public_dir: Path):
-    train_path = public_dir / "en_train.csv"
-    test_path = public_dir / "en_test_2.csv"
-    sample_path = public_dir / "en_sample_submission_2.csv"
+    train_path = public_dir / "train.csv"
+    test_path = public_dir / "test.csv"
+    sample_path = public_dir / "sample_submission.csv"
 
     df_train = pd.read_csv(train_path)
     df_test = pd.read_csv(test_path)
