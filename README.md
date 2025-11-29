@@ -1,4 +1,4 @@
-This is Melvin, similar to Devin, the AI Software Engineer, Melvin is the AI Machine Learning Engineer. It automatically does the following things autonomously: 
+This is Melvin, similar to Devin, the AI Software Engineer, Melvin is an AI Machine Learning Engineer. Below are the things that it can do autonomously: 
 - Analyses the MLEbench lite datasets from kaggle.
 - Decides the type of ML task it needs to perform based on the analysis.
 - Generates the optimal training script for the dataset.
