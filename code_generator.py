@@ -1,19 +1,16 @@
-# code_generator.py
-
 import os
 import json
 from pathlib import Path
 
 from litellm import completion
 from langgraph.graph import StateGraph
-
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 # ---------------------------------------------------------
-# LangGraph State
+# State Definitions
 # ---------------------------------------------------------
 class CodegenState(dict):
     modality: str
@@ -22,11 +19,18 @@ class CodegenState(dict):
     classes: list
     metadata: dict
     dataset_dir: str
+    seed: int
     script: str
 
 
+class FixState(dict):
+    script: str
+    error_log: str
+    fixed_script: str
+
+
 # ---------------------------------------------------------
-# NODE: Gemini 2.5 Flash — Full Script Generator
+# NODE: Script Generator (Creator)
 # ---------------------------------------------------------
 def llm_script_generator(state: CodegenState):
     modality = state["modality"]
@@ -35,68 +39,63 @@ def llm_script_generator(state: CodegenState):
     classes = state.get("classes", [])
     metadata = state["metadata"]
     dataset_dir = state["dataset_dir"]
+    seed = state.get("seed", 42)
 
     prompt = f"""
     You are an advanced ML engineering agent.
     Your job is to generate a FULL, SELF-CONTAINED Python training script.
 
     DATASET LOCATION:
-    The dataset files (train.csv, test.csv, sample_submission.csv) are located at:
     "{dataset_dir}"
 
-    The script MUST:
-    - Import os and Path
-    - Construct file paths using the provided DATASET LOCATION.
-    - Load train.csv, test.csv, sample_submission.csv using those absolute paths.
-    - use {modality} + {task_type} to decide model and preprocessing
-    - use target_col = "{target_col}"
-    - handle classes = {classes}
-    - fit a model
-    - generate predictions
-    - write "submission.csv" to the CURRENT working directory (do not use the dataset path for output).
-    - run WITHOUT modification
-    - contain all imports
-    - NO placeholders
-    - Python ONLY
-    - DO NOT wrap in backticks
-    - DO NOT explain anything
-    - ONLY output executable Python code
-
-    Dataset metadata:
+    METADATA:
     {json.dumps(metadata, indent=2)}
 
-    Follow these model rules:
+    TASK:
+    - Modality: {modality}
+    - Type: {task_type}
+    - Target: {target_col}
+    - Classes: {classes}
 
-    TEXT CLASSIFICATION:
-    - Use TfidfVectorizer + LogisticRegression (sklearn)
+    REQUIREMENTS:
+    1.  **Reproducibility**: Set `random_state={seed}` and `torch.manual_seed({seed})` everywhere.
+    2.  **Data Loading**: Use `pd.read_csv` with absolute paths.
+    3.  **Submission**: Write `submission.csv` to current working directory (NOT dataset dir).
+    4.  **No Placeholders**: Code must be runnable immediately.
+    
+    ### CRITICAL RESOURCE CONSTRAINTS (CPU MODE):
+    5.  **DATA SUBSETTING**: We are testing on CPU. You MUST load/use only **5%** of the training data.
+        - Example: `train_df = train_df.sample(frac=0.05, random_state={seed})`
+        - Do NOT skip this. Full dataset training will crash.
+    6.  **EPOCH LIMIT**: Train for a MAXIMUM of **3 epochs**.
 
-    TABULAR CLASSIFICATION:
-    - Use LightGBM OR RandomForestClassifier
+    CRITICAL LIBRARY BEST PRACTICES (Avoid Deprecated APIs):
+    - **Optimizers**: NEVER import `AdamW` from `transformers`. ALWAYS use `torch.optim.AdamW`.
+    - **Transformers**: Use `AutoTokenizer` and `AutoModel...` classes where possible.
+    - **DataLoaders**: ALWAYS set `num_workers=0` in `torch.utils.data.DataLoader`. Do NOT use multiprocessing (it causes crashes on macOS/Windows in this environment).
+    - **Preprocessing**: If using `T5Tokenizer`, requires `sentencepiece`.
+    - **Evaluation**: Ensure predictions match the sample_submission format exactly.
+    - **Pandas vs Datasets**: 
+        - Pandas DataFrames use `.columns` (list).
+        - HuggingFace Datasets use `.column_names` (list).
+        - DO NOT mix them up.
 
-    TABULAR REGRESSION:
-    - Use LightGBM OR RandomForestRegressor
+    SPECIFIC MODEL GUIDANCE:
+    - TEXT CLASSIFICATION: TfidfVectorizer + LogisticRegression.
+    - TABULAR: LightGBM or RandomForest.
+    - SEQ2SEQ (Text Normalization): Use `transformers` (T5-small). 
+        - Input: Text column. Target: Target column.
+        - Use `Seq2SeqTrainer` or standard PyTorch training loop.
+        - **Important**: Clean text data (handle NaNs) before tokenizing.
+    - IMAGE: torchvision (ResNet18).
+    - AUDIO: torchaudio + CNN.
 
-    SEQ2SEQ (text normalization):
-    - Use transformers (T5-small)
-    - Tokenize input/output columns
-    - Predict normalized text
-    - Produce submission file
-
-    IMAGE CLASSIFICATION:
-    - Use torchvision (ResNet18)
-    - Standard transforms, DataLoader
-
-    AUDIO CLASSIFICATION:
-    - Use torchaudio, CNN-based classifier
-
-    Remember:
-    - You MUST write submission.csv
-    - Column order MUST match sample_submission.csv
-    - Ensure probabilities sum to 1 for classification
+    OUTPUT:
+    - Return ONLY valid Python code. No markdown backticks.
     """
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-2.5-flash",  # Switched to Flash for faster code generation
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -104,6 +103,7 @@ def llm_script_generator(state: CodegenState):
 
     raw_script = response["choices"][0]["message"]["content"]
 
+    # Clean markdown
     if raw_script.strip().startswith("```"):
         raw_script = raw_script.replace("```python", "").replace("```", "").strip()
 
@@ -112,9 +112,54 @@ def llm_script_generator(state: CodegenState):
 
 
 # ---------------------------------------------------------
+# NODE: Script Fixer (Repairer)
+# ---------------------------------------------------------
+def llm_script_fixer(state: FixState):
+    script = state["script"]
+    error_log = state["error_log"]
+
+    prompt = f"""
+    You are an expert Python debugger for Machine Learning scripts.
+    The following script crashed during execution.
+
+    YOUR TASK:
+    Fix the code to resolve the specific error found in the logs.
+    Return the FULL, corrected script.
+
+    BROKEN SCRIPT:
+    ```python
+    {script}
+    ERROR LOG:
+    {error_log}
+    ANALYSIS:
+    Identify the line causing the error.
+    If the error involves "DataLoader worker exited" or "multiprocessing", CHANGE `num_workers` to 0.
+    Fix logic errors (e.g., pandas df.column_names -> df.columns).
+    Fix import errors (e.g., deprecated APIs).
+    Fix shape mismatches.
+    DO NOT remove the logic that saves submission.csv.
+    Ensure `train_df.sample(frac=0.05)` or equivalent subsetting logic is preserved to keep it fast.
+    OUTPUT:
+    Return ONLY valid Python code. No markdown backticks.
+    """
+    response = completion(
+        model="gemini/gemini-2.5-pro",
+        api_key=os.getenv("GEMINI_API_KEY"),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+    )
+    fixed_script = response["choices"][0]["message"]["content"]
+    # Clean markdown
+    if fixed_script.strip().startswith(""):
+        fixed_script = fixed_script.replace("python", "").replace("```", "").strip()
+    state["fixed_script"] = fixed_script
+    return state
+
+
+# ---------------------------------------------------------
 # Build LangGraph
 # ---------------------------------------------------------
-def build_graph():
+def build_gen_graph():
     graph = StateGraph(CodegenState)
     graph.add_node("code_generator", llm_script_generator)
     graph.set_entry_point("code_generator")
@@ -122,16 +167,31 @@ def build_graph():
     return graph.compile()
 
 
+def build_fix_graph():
+    graph = StateGraph(FixState)
+    graph.add_node("code_fixer", llm_script_fixer)
+    graph.set_entry_point("code_fixer")
+    graph.set_finish_point("code_fixer")
+    return graph.compile()
+
+
 # ---------------------------------------------------------
-# Public API: generate training script file
+# Public API
 # ---------------------------------------------------------
 async def generate_training_script_llm(
-    modality, task_type, target_col, classes, metadata, dataset_dir, output_path: Path
+    modality,
+    task_type,
+    target_col,
+    classes,
+    metadata,
+    dataset_dir,
+    output_path: Path,
+    seed: int = 42,
 ):
-    # Convert path to string for JSON/Prompt safety
     dataset_dir_str = str(dataset_dir.resolve())
 
-    graph = build_graph()
+    graph = build_gen_graph()
+
     final_state = await graph.ainvoke(
         {
             "modality": modality,
@@ -139,11 +199,22 @@ async def generate_training_script_llm(
             "target_col": target_col,
             "classes": classes,
             "metadata": metadata,
-            "dataset_dir": dataset_dir_str,  # <--- PASS TO GRAPH
+            "dataset_dir": dataset_dir_str,
+            "seed": seed,
         }
     )
 
     script = final_state["script"]
     output_path.write_text(script)
-
     return output_path
+
+
+# ---------------------------------------------------------
+# Public API: Fix
+# ---------------------------------------------------------
+async def fix_training_script_llm(current_script: str, error_log: str):
+    graph = build_fix_graph()
+    final_state = await graph.ainvoke(
+        {"script": current_script, "error_log": error_log}
+    )
+    return final_state["fixed_script"]
