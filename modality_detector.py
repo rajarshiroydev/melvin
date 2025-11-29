@@ -66,8 +66,16 @@ def llm_modality_detector(state: ModalityState):
     - classes (list)
 
     RULES:
-    - Always output VALID JSON.
-    - No explanation, ONLY JSON.
+    1. Always output VALID JSON. No explanation.
+    2. **HIERARCHY OF MODALITIES**:
+       - If IMAGE files (.jpg, .png) are present -> Modality is 'image' (even if CSVs exist).
+       - If AUDIO files (.wav, .flac) are present -> Modality is 'audio'.
+       - Only select 'tabular' if NO images/audio/long-text are present.
+    3. **TASK TYPE LOGIC**:
+       - If target is a continuous number -> 'regression'.
+       - If target is a class/label -> 'classification'.
+       - If target is text (translation/summary) -> 'seq2seq'.
+       - **CRITICAL**: If inputs are images AND targets are also images (e.g., denoising, super-resolution, file paths in clean/dirty folders) -> task_type is 'regression' (pixel-wise regression).
 
     JSON schema:
     {{
@@ -79,7 +87,7 @@ def llm_modality_detector(state: ModalityState):
     """
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-2.5-pro",
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -87,9 +95,13 @@ def llm_modality_detector(state: ModalityState):
 
     raw = response["choices"][0]["message"]["content"]
 
-    # Clean the response string by removing markdown code fences
-    if raw.strip().startswith("```"):
-        raw = raw.replace("```json", "").replace("```", "").strip()
+    # Strategy: Find the first '{' and the last '}' to isolate the JSON object
+    start_index = raw.find("{")
+    end_index = raw.rfind("}")
+
+    if start_index != -1 and end_index != -1:
+        # Extract the substring between the braces
+        raw = raw[start_index : end_index + 1]
 
     # Safe JSON parse
     try:
