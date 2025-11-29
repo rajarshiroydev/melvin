@@ -87,7 +87,7 @@ def llm_modality_detector(state: ModalityState):
     """
 
     response = completion(
-        model="gemini/gemini-2.5-pro",
+        model="gemini/gemini-2.5-flash",
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
