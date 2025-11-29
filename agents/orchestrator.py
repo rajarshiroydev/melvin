@@ -13,7 +13,7 @@ from datetime import datetime
 
 from pathlib import Path
 
-# Assuming these are in the same folder (melvin/agents/)
+# Ensure these files exist in the same directory
 from code_generator import generate_training_script_llm, fix_training_script_llm
 from modality_detector import collect_dataset_metadata, detect_modality_llm
 
@@ -24,8 +24,7 @@ class MLEAgent:
         self.seed = seed
 
         # ------------------------------------------------------------------
-        # NEW: Unique Run Directory Logic
-        # Format: runs/{YYYY-MM-DD_HH-MM-SS}_{competition_id}
+        # Unique Run Directory Logic
         # ------------------------------------------------------------------
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         run_name = f"{timestamp}_{competition_id}"
@@ -44,16 +43,14 @@ class MLEAgent:
         self.prepared_private = self.cache_dir / "prepared/private"
 
         # ------------------------------------------------------------------
-        # UPDATED: Path Calculation for New Folder Structure
+        # Path Calculation for New Folder Structure
         # ------------------------------------------------------------------
-        # Current file: Hexo/melvin/agents/orchestrator.py
         agent_dir = Path(__file__).resolve().parent  # .../Hexo/melvin/agents
 
-        # We need to go up 2 levels (agents -> melvin -> Hexo) to find mle-bench
+        # Go up 2 levels (agents -> melvin -> Hexo) to find mle-bench
         self.repo_root = agent_dir.parent.parent / "mle-bench"
 
         if not self.repo_root.exists():
-            # Fallback check in case you move things again
             print(f"[ERROR] Could not find mle-bench at: {self.repo_root}")
             print("Please ensure the folder structure is correct.")
             sys.exit(1)
@@ -75,7 +72,7 @@ class MLEAgent:
         self.config = yaml.safe_load(open(self.config_path))
 
     # ----------------------------------------------------------------------
-    # HELPER: Dynamic Module Loader (Symlink Strategy)
+    # HELPER: Dynamic Module Loader
     # ----------------------------------------------------------------------
     def load_module_from_path(self, module_path_str):
         module_name_full, fn_name = module_path_str.split(":")
@@ -227,11 +224,26 @@ class MLEAgent:
             except subprocess.CalledProcessError:
                 return False
 
-        # 2. Install Missing Module
+        # 2. Scipy/Numpy Linkage Fix
+        if "numpy.char" in error_msg or "module named 'numpy.char'" in error_msg:
+            print("[WARN] SciPy/NumPy Mismatch Detected. Reinstalling SciPy...")
+            self.log({"step": "error_recovery", "action": "reinstall_scipy"})
+            try:
+                subprocess.run(
+                    ["uv", "pip", "install", "--force-reinstall", "scipy"], check=True
+                )
+                return True
+            except subprocess.CalledProcessError:
+                return False
+
+        # 3. Install Missing Module
         missing_module = None
         match_std = re.search(r"No module named '(.+?)'", error_msg)
         if match_std:
             missing_module = match_std.group(1)
+
+        if missing_module and "numpy" in missing_module:
+            return False
 
         if not missing_module:
             match_req = re.search(r"requires the ([a-zA-Z0-9]+) library", error_msg)
@@ -239,7 +251,14 @@ class MLEAgent:
                 missing_module = match_req.group(1)
 
         if missing_module:
-            package = self.package_mapping.get(missing_module, missing_module)
+            package_map = {
+                "sklearn": "scikit-learn",
+                "cv2": "opencv-python",
+                "PIL": "Pillow",
+                "yaml": "PyYAML",
+            }
+            package = package_map.get(missing_module, missing_module)
+
             if "mlebench" in package:
                 return False
 
@@ -299,27 +318,20 @@ class MLEAgent:
                     }
                 )
 
-                # A. Try Dependency Fix
                 if self._handle_execution_error(error_output):
                     print(f"[INFO] Retrying after install (Attempt {attempt + 1})...")
                     continue
 
-                # B. Try Code Logic Fix (Reflexion)
                 print(
                     f"[WARN] Code Execution Failed. Attempting AI Repair (Attempt {attempt + 1})..."
                 )
 
                 try:
                     current_code = script_path.read_text()
-
-                    # Call the fixer LLM
                     fixed_code = asyncio.run(
                         fix_training_script_llm(current_code, error_output)
                     )
-
-                    # Overwrite the script
                     script_path.write_text(fixed_code)
-
                     print(f"[INFO] Applied AI Fix. Retrying...")
                     self.log({"step": "error_recovery", "action": "ai_code_fix"})
                     continue
@@ -331,7 +343,7 @@ class MLEAgent:
         raise RuntimeError("Training script failed too many times.")
 
     # ----------------------------------------------------------------------
-    # STEP 5 — GRADE SUBMISSION
+    # STEP 5 — GRADE SUBMISSION (Via Wrapper Process)
     # ----------------------------------------------------------------------
     def grade_submission(self):
         print("[INFO] Grading submission...")
@@ -341,42 +353,60 @@ class MLEAgent:
             print("[ERROR] submission.csv not found!")
             return None
 
-        grader_path = self.config["grader"]["grade_fn"]
+        grader_module_str = self.config["grader"]["grade_fn"]
         answers_path = self.prepared_private / "test.csv"
+        repo_root_str = str(self.repo_root)
 
-        for attempt in range(5):
-            try:
-                grade_fn = self.load_module_from_path(grader_path)
+        # Calculate path to the static wrapper script
+        wrapper_path = Path(__file__).parent / "grader_wrapper.py"
 
-                # Basic check
-                sample_sub = self.prepared_public / "sample_submission.csv"
-                sub_cols = list(pd.read_csv(submission_path).columns)
-                sam_cols = list(pd.read_csv(sample_sub).columns)
+        if not wrapper_path.exists():
+            print(f"[ERROR] grader_wrapper.py not found at {wrapper_path}")
+            return None
 
-                if sub_cols != sam_cols:
-                    print("[WARN] Submission columns do not match sample!")
+        cmd = [
+            sys.executable,
+            str(wrapper_path),
+            "--repo_root",
+            repo_root_str,
+            "--grader_module",
+            grader_module_str,
+            "--submission",
+            str(submission_path),
+            "--answers",
+            str(answers_path),
+        ]
 
-                sub_df = pd.read_csv(submission_path)
-                ans_df = pd.read_csv(answers_path)
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 
-                score = grade_fn(sub_df, ans_df)
-                print(f"[INFO] Final Score (Seed {self.seed}): {score}")
+            score = None
+            for line in result.stdout.splitlines():
+                if "SCORE_OUTPUT:" in line:
+                    score = float(line.split("SCORE_OUTPUT:")[1])
+                    print(f"[INFO] Final Score (Seed {self.seed}): {score}")
 
-                self.log({"step": "grading", "status": "success", "score": score})
+                    self.log({"step": "grading", "status": "success", "score": score})
 
-                with open(
-                    self.output_dir / f"grading_report_seed_{self.seed}.json", "w"
-                ) as f:
-                    json.dump({"score": score, "seed": self.seed}, f, indent=4)
+                    with open(
+                        self.output_dir / f"grading_report_seed_{self.seed}.json", "w"
+                    ) as f:
+                        json.dump({"score": score, "seed": self.seed}, f, indent=4)
+                    return score
 
-                return score
+            print(
+                f"[WARN] Grading finished but no score found. Output:\n{result.stdout}"
+            )
+            return None
 
-            except Exception as e:
-                err_str = str(e)
-                print(f"[WARN] Grading failed: {err_str}")
-                if self._handle_execution_error(err_str):
-                    continue
-                raise e
+        except subprocess.CalledProcessError as e:
+            err = e.stderr
+            print(f"[ERROR] Grading process crashed:\n{err}")
+
+            if self._handle_execution_error(err):
+                print("[INFO] Attempting to retry grading after environment fix...")
+                return self.grade_submission()
+            return None
 
     def log(self, entry: dict):
         log_path = self.output_dir / "reasoning_log.jsonl"
@@ -397,15 +427,7 @@ class MLEAgent:
 
 
 if __name__ == "__main__":
-    # ------------------------------------------------------------------
-    # UPDATED: Dynamic Default Path for 'runs'
-    # ------------------------------------------------------------------
-    # This logic ensures 'runs' defaults to 'Hexo/melvin/runs'
-    # regardless of where you call the script from.
     current_file = Path(__file__).resolve()
-    # current_file = Hexo/melvin/agents/orchestrator.py
-    # .parent      = Hexo/melvin/agents
-    # .parent.parent = Hexo/melvin
     default_runs_dir = current_file.parent.parent / "runs"
 
     parser = argparse.ArgumentParser()
