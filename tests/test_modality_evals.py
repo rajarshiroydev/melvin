@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from modality_detector import detect_modality_llm
+from melvin.agents.modality_detector import detect_modality_llm
 
 # --------------------------------------------------------------------------
 # THE GOLDEN DATASET (Ground Truth)

@@ -12,6 +12,8 @@ import pandas as pd
 from datetime import datetime
 
 from pathlib import Path
+
+# Assuming these are in the same folder (melvin/agents/)
 from code_generator import generate_training_script_llm, fix_training_script_llm
 from modality_detector import collect_dataset_metadata, detect_modality_llm
 
@@ -28,7 +30,8 @@ class MLEAgent:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         run_name = f"{timestamp}_{competition_id}"
 
-        self.output_dir = Path(runs_base_dir) / run_name
+        # Resolve the full path to ensure it goes to melvin/runs/
+        self.output_dir = Path(runs_base_dir).resolve() / run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         print(
@@ -40,9 +43,20 @@ class MLEAgent:
         self.prepared_public = self.cache_dir / "prepared/public"
         self.prepared_private = self.cache_dir / "prepared/private"
 
-        # Calculate path relative to run_agent.py
-        agent_dir = Path(__file__).resolve().parent
-        self.repo_root = agent_dir.parent / "mle-bench"
+        # ------------------------------------------------------------------
+        # UPDATED: Path Calculation for New Folder Structure
+        # ------------------------------------------------------------------
+        # Current file: Hexo/melvin/agents/orchestrator.py
+        agent_dir = Path(__file__).resolve().parent  # .../Hexo/melvin/agents
+
+        # We need to go up 2 levels (agents -> melvin -> Hexo) to find mle-bench
+        self.repo_root = agent_dir.parent.parent / "mle-bench"
+
+        if not self.repo_root.exists():
+            # Fallback check in case you move things again
+            print(f"[ERROR] Could not find mle-bench at: {self.repo_root}")
+            print("Please ensure the folder structure is correct.")
+            sys.exit(1)
 
         if str(self.repo_root) not in sys.path:
             sys.path.append(str(self.repo_root))
@@ -383,10 +397,20 @@ class MLEAgent:
 
 
 if __name__ == "__main__":
+    # ------------------------------------------------------------------
+    # UPDATED: Dynamic Default Path for 'runs'
+    # ------------------------------------------------------------------
+    # This logic ensures 'runs' defaults to 'Hexo/melvin/runs'
+    # regardless of where you call the script from.
+    current_file = Path(__file__).resolve()
+    # current_file = Hexo/melvin/agents/orchestrator.py
+    # .parent      = Hexo/melvin/agents
+    # .parent.parent = Hexo/melvin
+    default_runs_dir = current_file.parent.parent / "runs"
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--competition", required=True)
-    # Changed default from "agent_output" to "runs"
-    parser.add_argument("-o", "--output", default="runs")
+    parser.add_argument("-o", "--output", default=str(default_runs_dir))
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 

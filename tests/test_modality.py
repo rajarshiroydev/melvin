@@ -3,7 +3,7 @@ import pandas as pd
 import json
 
 # Import the functions we want to test
-from modality_detector import collect_dataset_metadata, detect_modality_llm
+from melvin.agents.modality_detector import collect_dataset_metadata, detect_modality_llm
 
 
 # --------------------------------------------------------------------------
