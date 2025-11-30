@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 import asyncio
+import os
 import time
 import pandas as pd
 from datetime import datetime
@@ -37,10 +38,40 @@ class MLEAgent:
             f"[INFO] Initialized new run. Logs and outputs will be saved to:\n       -> {self.output_dir}"
         )
 
-        # MLEbench cache directory
-        self.cache_dir = Path.home() / "Library/Caches/mle-bench/data" / competition_id
+        # ------------------------------------------------------------------
+        # DYNAMIC MLEBENCH CACHE DIRECTORY LOCATOR  (FIX FOR LIGHTNING AI)
+        # ------------------------------------------------------------------
+        def _possible_cache_roots():
+            home = Path.home()
+            return [
+                home / ".cache/mle-bench/data",
+                home / "Library/Caches/mle-bench/data",
+                Path("/home/zeus/.cache/mle-bench/data"),  # Lightning internal user
+                Path("/root/.cache/mle-bench/data"),  # Docker / root containers
+                Path(
+                    "/teamspace/studios/this_studio/.cache/mle-bench/data"
+                ),  # Lightning Studio
+            ]
+
+        # Find actual dataset directory
+        dataset_path = None
+        for root in _possible_cache_roots():
+            candidate = root / competition_id
+            if candidate.exists():
+                dataset_path = candidate
+                break
+
+        if dataset_path is None:
+            print(
+                "[WARN] No existing dataset found. Using default HOME-based cache path."
+            )
+            dataset_path = Path.home() / ".cache/mle-bench/data" / competition_id
+
+        self.cache_dir = dataset_path
         self.prepared_public = self.cache_dir / "prepared/public"
         self.prepared_private = self.cache_dir / "prepared/private"
+
+        print(f"[INFO] Using dataset directory:\n       -> {self.cache_dir}")
 
         # ------------------------------------------------------------------
         # Path Calculation for New Folder Structure
@@ -70,6 +101,51 @@ class MLEAgent:
             raise FileNotFoundError(f"Config not found at: {self.config_path}")
 
         self.config = yaml.safe_load(open(self.config_path))
+
+    # ----------------------------------------------------------------------
+    # HELPER: Hardware Detection
+    # ----------------------------------------------------------------------
+    def get_hardware_profile(self):
+        import psutil
+        import shutil
+
+        # CPU
+        cpu_cores = os.cpu_count()
+
+        # RAM
+        ram_total_gb = round(psutil.virtual_memory().total / 1e9, 2)
+
+        # DISK
+        disk_total_gb = round(shutil.disk_usage("/").total / 1e9, 2)
+        disk_free_gb = round(shutil.disk_usage("/").free / 1e9, 2)
+
+        # GPU (if available)
+        gpu_name = "None"
+        gpu_vram_gb = 0
+        gpu_count = 0
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_vram_gb = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 2)
+        except:
+            pass
+
+        profile = {
+            "cpu_cores": cpu_cores,
+            "ram_gb": ram_total_gb,
+            "disk_total_gb": disk_total_gb,
+            "disk_free_gb": disk_free_gb,
+            "gpu_count": gpu_count,
+            "gpu_name": gpu_name,
+            "gpu_vram_gb": gpu_vram_gb,
+        }
+
+        # Log for transparency
+        self.log({"step": "hardware_detection", "profile": profile})
+
+        return profile
 
     # ----------------------------------------------------------------------
     # HELPER: Dynamic Module Loader
@@ -154,7 +230,7 @@ class MLEAgent:
     # ----------------------------------------------------------------------
     # STEP 3 — GENERATE TRAINING CODE
     # ----------------------------------------------------------------------
-    def full_codegen(self, modality, task_type, target_col, classes, metadata):
+    def full_codegen(self, modality, task_type, target_col, classes, metadata, hardware):
         script_path = self.output_dir / "generated_train_script.py"
 
         asyncio.run(
@@ -167,6 +243,7 @@ class MLEAgent:
                 dataset_dir=self.prepared_public,
                 output_path=script_path,
                 seed=self.seed,
+                hardware=hardware,
             )
         )
         print("[INFO] Training script generated.")
@@ -281,7 +358,7 @@ class MLEAgent:
         return False
 
     # ----------------------------------------------------------------------
-    # STEP 4 — RUN TRAINING SCRIPT (Loop with Fixer)
+    # STEP 4 — RUN TRAINING SCRIPT (Streaming Output)
     # ----------------------------------------------------------------------
     def run_training_script(self, script_path):
         print("[INFO] Running training script...")
@@ -290,55 +367,66 @@ class MLEAgent:
         max_retries = 10
 
         for attempt in range(max_retries):
-            try:
-                result = subprocess.run(
-                    [sys.executable, script_path.name],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    cwd=self.output_dir,
-                )
-                print(result.stdout)
+            # We use Popen instead of run to capture output in real-time
+            process = subprocess.Popen(
+                [sys.executable, "-u", script_path.name],  # -u forces unbuffered output
+                cwd=self.output_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout so we see errors in order
+                text=True,
+                bufsize=1,  # Line buffered
+            )
+
+            # Stream output to console AND capture it for the Fixer
+            captured_logs = []
+
+            # Read line by line as they happen
+            for line in process.stdout:
+                print(line, end="")  # Print to your terminal immediately
+                captured_logs.append(line)
+
+            # Wait for process to finish and get exit code
+            process.wait()
+
+            # Combine logs into one string
+            full_log_output = "".join(captured_logs)
+
+            if process.returncode == 0:
                 self.log(
                     {"step": "training", "status": "success", "attempt": attempt + 1}
                 )
                 print("[INFO] Training script executed successfully.")
                 return
 
-            except subprocess.CalledProcessError as e:
-                error_output = e.stderr
-                print(e.stdout)
-                print(error_output, file=sys.stderr)
+            # --- FAILURE HANDLING ---
+            print(f"\n[WARN] Process crashed with exit code {process.returncode}")
 
-                self.log(
-                    {
-                        "step": "training_fail",
-                        "attempt": attempt + 1,
-                        "error_snippet": error_output[:500],
-                    }
+            # Logic to handle recovery
+            # We pass the full_log_output because it contains the Traceback
+            if self._handle_execution_error(full_log_output):
+                print(f"[INFO] Retrying after install (Attempt {attempt + 1})...")
+                continue
+
+            print(
+                f"[WARN] Code Execution Failed. Attempting AI Repair (Attempt {attempt + 1})..."
+            )
+
+            try:
+                current_code = script_path.read_text()
+
+                # Pass the captured logs to the fixer
+                fixed_code = asyncio.run(
+                    fix_training_script_llm(current_code, full_log_output)
                 )
 
-                if self._handle_execution_error(error_output):
-                    print(f"[INFO] Retrying after install (Attempt {attempt + 1})...")
-                    continue
+                script_path.write_text(fixed_code)
+                print(f"[INFO] Applied AI Fix. Retrying...")
+                self.log({"step": "error_recovery", "action": "ai_code_fix"})
+                continue
 
-                print(
-                    f"[WARN] Code Execution Failed. Attempting AI Repair (Attempt {attempt + 1})..."
-                )
-
-                try:
-                    current_code = script_path.read_text()
-                    fixed_code = asyncio.run(
-                        fix_training_script_llm(current_code, error_output)
-                    )
-                    script_path.write_text(fixed_code)
-                    print(f"[INFO] Applied AI Fix. Retrying...")
-                    self.log({"step": "error_recovery", "action": "ai_code_fix"})
-                    continue
-
-                except Exception as fix_err:
-                    print(f"[ERROR] AI Repair failed: {fix_err}")
-                    raise e
+            except Exception as fix_err:
+                print(f"[ERROR] AI Repair failed: {fix_err}")
+                raise RuntimeError(f"Training failed: {full_log_output}")
 
         raise RuntimeError("Training script failed too many times.")
 
@@ -415,11 +503,12 @@ class MLEAgent:
             f.write(json.dumps(entry_with_time) + "\n")
 
     def run(self):
+        self.hardware = self.get_hardware_profile()
         self.prepare_data()
         modality, task_type, target_col, classes, metadata = self.full_detect()
 
         script_path = self.full_codegen(
-            modality, task_type, target_col, classes, metadata
+        modality, task_type, target_col, classes, metadata, self.hardware
         )
 
         self.run_training_script(script_path)

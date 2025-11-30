@@ -1,5 +1,3 @@
-# modality_detector.py
-
 import os
 import json
 from pathlib import Path
@@ -17,6 +15,30 @@ except ImportError:
     HAS_PIL = False
 
 load_dotenv()
+
+
+# ---------------------------------------------------------
+# Helper: Text & File Readers
+# ---------------------------------------------------------
+def read_description_text(public_dir: Path):
+    """
+    Looks for description.md or README.md in the prepared public directory.
+    Returns truncated text content.
+    """
+    candidates = [
+        public_dir / "description.md",
+        public_dir / "README.md",
+    ]
+
+    for p in candidates:
+        if p.exists():
+            try:
+                # Read and truncate to avoid huge prompts
+                text = p.read_text(encoding="utf-8", errors="ignore")
+                return text[:3000]  # Limit to 3000 chars
+            except Exception:
+                continue
+    return "No description available."
 
 
 # ---------------------------------------------------------
@@ -95,11 +117,12 @@ def collect_dataset_metadata(public_dir: Path):
     # Calculate Profiling Stats
     dataset_size_mb = get_directory_size_mb(public_dir)
     complexity_stats = profile_data_complexity(df_train, public_dir)
+    description_text = read_description_text(public_dir)
 
     metadata = {
+        "description": description_text,
         "train_columns": list(df_train.columns),
         "test_columns": list(df_test.columns),
-        # "sample_submission_columns": ... (Optional, removed to save context window)
         "dtypes": df_train.dtypes.astype(str).to_dict(),
         "sample_rows": df_train.head(3).to_dict(orient="records"),
         "num_train_rows": len(df_train),
@@ -128,8 +151,13 @@ def llm_modality_detector(state: ModalityState):
     prompt = f"""
     You are an ML engineering agent.
 
-    You receive dataset metadata:
-    {json.dumps(metadata, indent=2)}
+    You receive dataset metadata and a task description.
+    
+    TASK DESCRIPTION (from README/description.md):
+    \"\"\"{metadata.get("description", "")}\"\"\"
+
+    METADATA:
+    {json.dumps({k: v for k, v in metadata.items() if k != "description"}, indent=2)}
 
     Determine:
     - modality (one of: text, tabular, image, audio, seq2seq, multimodal)
@@ -138,11 +166,11 @@ def llm_modality_detector(state: ModalityState):
     - classes (list)
 
     REASONING GUIDELINES:
-    1. **Modality Hierarchy**: 
+    1. **Use Description First**: If the description explicitly says "Classify audio files" or "Predict the housing price", trust that over file extensions.
+    2. **Modality Hierarchy**: 
        - Prioritize complex modalities (Image/Audio) over Tabular. 
        - If a CSV contains filenames pointing to images -> Modality is 'image'.
-    
-    2. **Task Type Definitions**:
+    3. **Task Type Definitions**:
        - **Classification**: Target is a discrete label or class ID.
        - **Regression**: Target is a continuous number.
        - **Image Restoration/Generation**: If the target column points to *image files* (meaning Input Image -> Output Image), this is technically a **regression** task (predicting pixel values), NOT seq2seq.
