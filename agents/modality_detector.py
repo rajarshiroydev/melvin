@@ -6,11 +6,78 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 from litellm import completion
-
 from langgraph.graph import StateGraph
 
+# Try importing PIL for image profiling, handle if missing
+try:
+    from PIL import Image
+
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 load_dotenv()
+
+
+# ---------------------------------------------------------
+# Helper: Profiling Functions
+# ---------------------------------------------------------
+def get_directory_size_mb(directory: Path):
+    """Calculates total size of a directory in MB."""
+    total_size = 0
+    try:
+        for dirpath, _, filenames in os.walk(directory):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if not os.path.islink(fp):
+                    total_size += os.path.getsize(fp)
+    except Exception:
+        return 0
+    return round(total_size / (1024 * 1024), 2)
+
+
+def profile_data_complexity(df, public_dir):
+    """Generates heuristic stats about data complexity."""
+    stats = {
+        "avg_text_length": 0,
+        "image_resolution_hint": None,
+        "is_complex_text": False,
+    }
+
+    # 1. Text Complexity Profiling
+    # Check string columns to see if they look like long text (sentences) or short (categories)
+    object_cols = df.select_dtypes(include=["object"]).columns
+    if len(object_cols) > 0:
+        # Sample first non-ID column
+        col = object_cols[0]
+        # Calculate avg word count of first 5 rows
+        try:
+            avg_words = df[col].astype(str).apply(lambda x: len(x.split())).mean()
+            stats["avg_text_length"] = int(avg_words)
+            stats["is_complex_text"] = bool(
+                avg_words > 20
+            )  # Threshold for NLP vs Categorical
+        except:
+            pass
+
+    # 2. Image Complexity Profiling
+    # Try to find an image folder and read one image to get dimensions
+    if HAS_PIL:
+        try:
+            # Look for common image folders
+            for sub in ["images", "train", "test", "."]:
+                p = public_dir / sub
+                if p.exists():
+                    # Find first jpg/png
+                    images = list(p.glob("*.jpg")) + list(p.glob("*.png"))
+                    if images:
+                        with Image.open(images[0]) as img:
+                            stats["image_resolution_hint"] = img.size  # (width, height)
+                        break
+        except Exception:
+            pass
+
+    return stats
 
 
 # ---------------------------------------------------------
@@ -21,18 +88,23 @@ def collect_dataset_metadata(public_dir: Path):
     test_path = public_dir / "test.csv"
     sample_path = public_dir / "sample_submission.csv"
 
-    df_train = pd.read_csv(train_path)
-    df_test = pd.read_csv(test_path)
-    df_sample = pd.read_csv(sample_path)
+    # Robust read (handle missing files for edge cases)
+    df_train = pd.read_csv(train_path) if train_path.exists() else pd.DataFrame()
+    df_test = pd.read_csv(test_path) if test_path.exists() else pd.DataFrame()
+
+    # Calculate Profiling Stats
+    dataset_size_mb = get_directory_size_mb(public_dir)
+    complexity_stats = profile_data_complexity(df_train, public_dir)
 
     metadata = {
         "train_columns": list(df_train.columns),
         "test_columns": list(df_test.columns),
-        "sample_submission_columns": list(df_sample.columns),
+        # "sample_submission_columns": ... (Optional, removed to save context window)
         "dtypes": df_train.dtypes.astype(str).to_dict(),
-        "sample_rows": df_train.head(5).to_dict(orient="records"),
+        "sample_rows": df_train.head(3).to_dict(orient="records"),
         "num_train_rows": len(df_train),
-        "num_test_rows": len(df_test),
+        "dataset_size_mb": dataset_size_mb,
+        "complexity": complexity_stats,
         "directory_files": [p.name for p in public_dir.iterdir()],
     }
 
@@ -65,17 +137,20 @@ def llm_modality_detector(state: ModalityState):
     - target_col
     - classes (list)
 
+    REASONING GUIDELINES:
+    1. **Modality Hierarchy**: 
+       - Prioritize complex modalities (Image/Audio) over Tabular. 
+       - If a CSV contains filenames pointing to images -> Modality is 'image'.
+    
+    2. **Task Type Definitions**:
+       - **Classification**: Target is a discrete label or class ID.
+       - **Regression**: Target is a continuous number.
+       - **Image Restoration/Generation**: If the target column points to *image files* (meaning Input Image -> Output Image), this is technically a **regression** task (predicting pixel values), NOT seq2seq.
+       - **Seq2Seq**: Target is text (e.g., translation).
+
     RULES:
-    1. Always output VALID JSON. No explanation.
-    2. **HIERARCHY OF MODALITIES**:
-       - If IMAGE files (.jpg, .png) are present -> Modality is 'image' (even if CSVs exist).
-       - If AUDIO files (.wav, .flac) are present -> Modality is 'audio'.
-       - Only select 'tabular' if NO images/audio/long-text are present.
-    3. **TASK TYPE LOGIC**:
-       - If target is a continuous number -> 'regression'.
-       - If target is a class/label -> 'classification'.
-       - If target is text (translation/summary) -> 'seq2seq'.
-       - **CRITICAL**: If inputs are images AND targets are also images (e.g., denoising, super-resolution, file paths in clean/dirty folders) -> task_type is 'regression' (pixel-wise regression).
+    - Always output VALID JSON.
+    - No explanation, ONLY JSON.
 
     JSON schema:
     {{

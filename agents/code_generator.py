@@ -42,14 +42,11 @@ def llm_script_generator(state: CodegenState):
     seed = state.get("seed", 42)
 
     prompt = f"""
-    You are an advanced ML engineering agent.
+    You are an advanced ML engineering agent (Resource-Constrained).
     Your job is to generate a FULL, SELF-CONTAINED Python training script.
 
-    DATASET LOCATION:
-    "{dataset_dir}"
-
-    METADATA:
-    {json.dumps(metadata, indent=2)}
+    DATASET LOCATION: "{dataset_dir}"
+    METADATA & PROFILING: {json.dumps(metadata, indent=2)}
 
     TASK:
     - Modality: {modality}
@@ -57,45 +54,52 @@ def llm_script_generator(state: CodegenState):
     - Target: {target_col}
     - Classes: {classes}
 
-    REQUIREMENTS:
-    1.  **Reproducibility**: Set `random_state={seed}` and `torch.manual_seed({seed})` everywhere.
-    2.  **Data Loading**: Use `pd.read_csv` with absolute paths.
-    3.  **Submission**: Write `submission.csv` to current working directory (NOT dataset dir).
-    4.  **No Placeholders**: Code must be runnable immediately.
+    ### 1. MODEL SELECTION LOGIC (ARCHITECT PHASE):
+    Analyze `metadata.complexity` and `dataset_size_mb` to choose the most efficient model.
+    **Constraint: CPU-Only Training.**
     
-    ### CRITICAL RESOURCE CONSTRAINTS (CPU MODE):
-    5.  **DATA SUBSETTING**: We are testing on CPU. You MUST load/use only **5%** of the training data.
+    *   **IF IMAGE**:
+        - **Task: Classification**:
+            - Low Resolution (<64x64): Build simple Custom CNN.
+            - High Resolution: Use `torchvision.models.mobilenet_v3_small(pretrained=True)`.
+        - **Task: Regression / Image-to-Image (Denoising)**:
+            - **CRITICAL**: Do NOT use a classifier backbone. Build a simple **Autoencoder** or **U-Net** (Conv2d -> ReLU -> MaxPool -> Upsample -> Conv2d). Output must match input shape.
+    
+    *   **IF TEXT**:
+        - **Task: Classification**:
+            - Short Text (<100 words): Use `sklearn` TfidfVectorizer + LogisticRegression.
+            - Long Text: Use `DistilBERT` (Freeze body, train head) or LSTM.
+        - **Task: Seq2Seq (Normalization/Translation)**:
+            - Use `transformers.T5ForConditionalGeneration` (t5-small) + `T5Tokenizer`.
+            - **Constraint**: Use `max_length=64` to keep CPU memory low.
+    
+    *   **IF AUDIO**:
+        - Use `torchaudio`. Convert waveform to MelSpectrogram.
+        - Model: Simple 2D CNN (treat Spectrogram as single-channel image).
+    
+    *   **IF TABULAR**:
+        - Small (<10k rows): `RandomForestClassifier` / `Regressor`.
+        - Large (>10k rows): `LightGBM` (Force `n_jobs=1` for stability if needed).
+
+    ### 2. CRITICAL RESOURCE CONSTRAINTS (CPU MODE):
+    - **DATA SUBSETTING**: We are testing on CPU. You MUST load/use only **5%** of the training data.
         - Example: `train_df = train_df.sample(frac=0.05, random_state={seed})`
-        - Do NOT skip this. Full dataset training will crash.
-    6.  **EPOCH LIMIT**: Train for a MAXIMUM of **3 epochs**.
+    - **EPOCH LIMIT**: Train for a MAXIMUM of **3 epochs**.
 
-    CRITICAL LIBRARY BEST PRACTICES (Avoid Deprecated APIs):
-    - **Optimizers**: NEVER import `AdamW` from `transformers`. ALWAYS use `torch.optim.AdamW`.
-    - **Transformers**: Use `AutoTokenizer` and `AutoModel...` classes where possible.
-    - **DataLoaders**: ALWAYS set `num_workers=0` in `torch.utils.data.DataLoader`. Do NOT use multiprocessing (it causes crashes on macOS/Windows in this environment).
-    - **Preprocessing**: If using `T5Tokenizer`, requires `sentencepiece`.
-    - **Evaluation**: Ensure predictions match the sample_submission format exactly.
-    - **Pandas vs Datasets**: 
-        - Pandas DataFrames use `.columns` (list).
-        - HuggingFace Datasets use `.column_names` (list).
-        - DO NOT mix them up.
-
-    SPECIFIC MODEL GUIDANCE:
-    - TEXT CLASSIFICATION: TfidfVectorizer + LogisticRegression.
-    - TABULAR: LightGBM or RandomForest.
-    - SEQ2SEQ (Text Normalization): Use `transformers` (T5-small). 
-        - Input: Text column. Target: Target column.
-        - Use `Seq2SeqTrainer` or standard PyTorch training loop.
-        - **Important**: Clean text data (handle NaNs) before tokenizing.
-    - IMAGE: torchvision (ResNet18).
-    - AUDIO: torchaudio + CNN.
+    ### 3. LIBRARY BEST PRACTICES:
+    - **Optimizers**: ALWAYS use `torch.optim.AdamW` (not transformers.AdamW).
+    - **DataLoaders**: ALWAYS set `num_workers=0`. NO Multiprocessing.
+    - **Inference (Critical)**: 
+        - Multi-Class Classification: Apply `softmax(dim=1)` to outputs.
+        - Binary/Multi-Label: Apply `sigmoid`.
+        - Regression / Image-to-Image: **No activation** (Raw values) or `sigmoid` if normalized to 0-1.
 
     OUTPUT:
     - Return ONLY valid Python code. No markdown backticks.
     """
 
     response = completion(
-        model="gemini/gemini-2.5-flash",  # Switched to Flash for faster code generation
+        model="gemini/gemini-2.5-flash",
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -133,17 +137,18 @@ def llm_script_fixer(state: FixState):
     {error_log}
     ANALYSIS:
     Identify the line causing the error.
-    If the error involves "DataLoader worker exited" or "multiprocessing", CHANGE `num_workers` to 0.
-    Fix logic errors (e.g., pandas df.column_names -> df.columns).
-    Fix import errors (e.g., deprecated APIs).
-    Fix shape mismatches.
-    DO NOT remove the logic that saves submission.csv.
-    Ensure `train_df.sample(frac=0.05)` or equivalent subsetting logic is preserved to keep it fast.
+    - If error is "DataLoader worker exited" or "multiprocessing": Force `num_workers=0`.
+    - If error is "CUDA out of memory" or device issue: Force `device='cpu'`.
+    - If error involves shape mismatch in Linear layers: Re-calculate the input features (flatten size) dynamically.
+    - If error involves "T5" or "Seq2Seq" shapes: Ensure padding and max_length are small (e.g., 64).
+    
+    Ensure `train_df.sample(frac=0.05)` logic is preserved.
+    
     OUTPUT:
     Return ONLY valid Python code. No markdown backticks.
     """
     response = completion(
-        model="gemini/gemini-2.5-pro",
+        model="gemini/gemini-2.5-flash",
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
