@@ -328,13 +328,7 @@ class MLEAgent:
                 missing_module = match_req.group(1)
 
         if missing_module:
-            package_map = {
-                "sklearn": "scikit-learn",
-                "cv2": "opencv-python",
-                "PIL": "Pillow",
-                "yaml": "PyYAML",
-            }
-            package = package_map.get(missing_module, missing_module)
+            package = self.package_mapping.get(missing_module, missing_module)
 
             if "mlebench" in package:
                 return False
@@ -497,10 +491,26 @@ class MLEAgent:
             return None
 
     def log(self, entry: dict):
+        """
+        Enhanced logging for assignment requirements:
+        - Adds short reasoning about task, modality, strategy choice, and self-improvement.
+        - Keeps logs safe (no raw chain-of-thought).
+        """
+        from code_generator import llm_reason_about_step
+
+        step = entry.get("step", "unknown")
+        reasoning = llm_reason_about_step(step, entry)
+
+        entry_with_time = {
+            "timestamp": time.time(),
+            **entry,
+            "reasoning": reasoning  # <-- added reflective summary
+        }
+
         log_path = self.output_dir / "reasoning_log.jsonl"
-        entry_with_time = {"timestamp": time.time(), **entry}
         with open(log_path, "a") as f:
             f.write(json.dumps(entry_with_time) + "\n")
+
 
     def run(self):
         self.hardware = self.get_hardware_profile()

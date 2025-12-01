@@ -1,0 +1,245 @@
+============================================================
+STARTING MLE-BENCH LITE EVALUATION
+Timestamp: 2025-12-01 03:19:59
+Datasets: 4
+Seeds per dataset: 3
+============================================================
+
+
+>>> PROCESSING DATASET: text-normalization-challenge-english-language
+    Threshold: 0.9855 (max)
+
+--- Running Seed 42 ---
+[INFO] Initialized new run. Logs and outputs will be saved to:
+       -> /teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language
+[INFO] Using dataset directory:
+       -> /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language
+[INFO] Prepared data already exists. Skipping prepare step.
+[INFO] Training script generated.
+[INFO] Running training script...
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 6, in <module>
+    from transformers import T5ForConditionalGeneration, T5Tokenizer, AdamW
+ImportError: cannot import name 'AdamW' from 'transformers' (/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/transformers/__init__.py)
+
+[WARN] Process crashed with exit code 1
+[WARN] Code Execution Failed. Attempting AI Repair (Attempt 1)...
+[INFO] Applied AI Fix. Retrying...
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 7, in <module>
+    from transformers.optimization import AdamW # Corrected import for AdamW
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: cannot import name 'AdamW' from 'transformers.optimization' (/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/transformers/optimization.py)
+
+[WARN] Process crashed with exit code 1
+[WARN] Code Execution Failed. Attempting AI Repair (Attempt 2)...
+[INFO] Applied AI Fix. Retrying...
+Using device: cuda
+Loading and preprocessing data...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_train.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_test_2.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_sample_submission_2.csv.zip...
+Original training data size: 8924976
+Subsampled training data size: 446249
+You are using the default legacy behaviour of the <class 'transformers.models.t5.tokenization_t5.T5Tokenizer'>. This is expected, and simply means that the `legacy` (previous) behavior will be used so nothing changes for you. If you want to use the new behaviour, set `legacy=False`. This should only be set if you understand what it means, and thoroughly read the reason why this was added as explained in https://github.com/huggingface/transformers/pull/24565
+Number of training batches: 3487
+Number of test batches: 7762
+Initializing model...
+Starting training...
+/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py:154: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler() # For mixed precision training (FP16)
+Cleaned up temporary directory: temp_data
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 161, in <module>
+    for batch_idx, batch in enumerate(train_loader):
+                            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1506, in _next_data
+    return self._process_data(data, worker_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1541, in _process_data
+    data.reraise()
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/_utils.py", line 769, in reraise
+    raise exception
+KeyError: Caught KeyError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3812, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7088, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7096, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'id'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/_utils/worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 100, in __getitem__
+    "id": row["id"] # Keep original ID for submission
+          ~~~^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/series.py", line 1133, in __getitem__
+    return self._get_value(key)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/series.py", line 1249, in _get_value
+    loc = self.index.get_loc(label)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3819, in get_loc
+    raise KeyError(key) from err
+KeyError: 'id'
+
+
+[WARN] Process crashed with exit code 1
+[WARN] Code Execution Failed. Attempting AI Repair (Attempt 3)...
+[INFO] Applied AI Fix. Retrying...
+Using device: cuda
+Loading and preprocessing data...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_train.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_test_2.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_sample_submission_2.csv.zip...
+Original training data size: 8924976
+Subsampled training data size: 446249
+You are using the default legacy behaviour of the <class 'transformers.models.t5.tokenization_t5.T5Tokenizer'>. This is expected, and simply means that the `legacy` (previous) behavior will be used so nothing changes for you. If you want to use the new behaviour, set `legacy=False`. This should only be set if you understand what it means, and thoroughly read the reason why this was added as explained in https://github.com/huggingface/transformers/pull/24565
+Number of training batches: 3487
+Number of test batches: 7762
+Initializing model...
+Starting training...
+/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py:157: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler() # For mixed precision training (FP16)
+/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py:177: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast(): # Enable mixed precision
+Epoch 1/1, Batch 100/3487, Loss: 0.5185
+Epoch 1/1, Batch 200/3487, Loss: 0.2379
+Epoch 1/1, Batch 300/3487, Loss: 0.4346
+Epoch 1/1, Batch 400/3487, Loss: 0.1623
+Epoch 1/1, Batch 500/3487, Loss: 0.5113
+Epoch 1/1, Batch 600/3487, Loss: 0.0708
+Epoch 1/1, Batch 700/3487, Loss: 0.1575
+Epoch 1/1, Batch 800/3487, Loss: 0.1445
+Epoch 1/1, Batch 900/3487, Loss: 0.0723
+Epoch 1/1, Batch 1000/3487, Loss: 0.1718
+Epoch 1/1, Batch 1100/3487, Loss: 0.0659
+Epoch 1/1, Batch 1200/3487, Loss: 0.1348
+Epoch 1/1, Batch 1300/3487, Loss: 0.0954
+Epoch 1/1, Batch 1400/3487, Loss: 0.0538
+Epoch 1/1, Batch 1500/3487, Loss: 0.1411
+Epoch 1/1, Batch 1600/3487, Loss: 0.1276
+Epoch 1/1, Batch 1700/3487, Loss: 0.5676
+Epoch 1/1, Batch 1800/3487, Loss: 0.0309
+Epoch 1/1, Batch 1900/3487, Loss: 0.1629
+Epoch 1/1, Batch 2000/3487, Loss: 0.0685
+Max steps reached (2000), stopping training for this epoch.
+Epoch 1 finished. Average Training Loss: 0.1805
+Generating predictions for submission...
+Cleaned up temporary directory: temp_data
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 204, in <module>
+    for batch_idx, batch in enumerate(test_loader):
+                            ^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1506, in _next_data
+    return self._process_data(data, worker_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1541, in _process_data
+    data.reraise()
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/_utils.py", line 769, in reraise
+    raise exception
+KeyError: Caught KeyError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3812, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7088, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7096, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'id'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/_utils/worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py", line 119, in __getitem__
+    item["id"] = row["id"]
+                 ~~~^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/series.py", line 1133, in __getitem__
+    return self._get_value(key)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/series.py", line 1249, in _get_value
+    loc = self.index.get_loc(label)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/teamspace/studios/this_studio/melvin/.venv/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3819, in get_loc
+    raise KeyError(key) from err
+KeyError: 'id'
+
+
+[WARN] Process crashed with exit code 1
+[WARN] Code Execution Failed. Attempting AI Repair (Attempt 4)...
+[INFO] Applied AI Fix. Retrying...
+Using device: cuda
+Loading and preprocessing data...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_train.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_test_2.csv.zip...
+Extracting /home/zeus/.cache/mle-bench/data/text-normalization-challenge-english-language/prepared/public/en_sample_submission_2.csv.zip...
+Added 'id' column to test_df from sample_submission_df.
+Original training data size: 8924976
+Subsampled training data size: 446249
+You are using the default legacy behaviour of the <class 'transformers.models.t5.tokenization_t5.T5Tokenizer'>. This is expected, and simply means that the `legacy` (previous) behavior will be used so nothing changes for you. If you want to use the new behaviour, set `legacy=False`. This should only be set if you understand what it means, and thoroughly read the reason why this was added as explained in https://github.com/huggingface/transformers/pull/24565
+Number of training batches: 3487
+Number of test batches: 7762
+Initializing model...
+Starting training...
+/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py:170: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler() # For mixed precision training (FP16)
+/teamspace/studios/this_studio/melvin/runs/2025-12-01_03-19-59_text-normalization-challenge-english-language/generated_train_script.py:190: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast(): # Enable mixed precision
+Epoch 1/1, Batch 100/3487, Loss: 0.5185
+Epoch 1/1, Batch 200/3487, Loss: 0.2379
+Epoch 1/1, Batch 300/3487, Loss: 0.4346
+Epoch 1/1, Batch 400/3487, Loss: 0.1623
+Epoch 1/1, Batch 500/3487, Loss: 0.5113
+Epoch 1/1, Batch 600/3487, Loss: 0.0708
+Epoch 1/1, Batch 700/3487, Loss: 0.1575
+Epoch 1/1, Batch 800/3487, Loss: 0.1445
+Epoch 1/1, Batch 900/3487, Loss: 0.0723
+Epoch 1/1, Batch 1000/3487, Loss: 0.1718
+Epoch 1/1, Batch 1100/3487, Loss: 0.0659
+Epoch 1/1, Batch 1200/3487, Loss: 0.1348
+Epoch 1/1, Batch 1300/3487, Loss: 0.0954
+Epoch 1/1, Batch 1400/3487, Loss: 0.0538
+Epoch 1/1, Batch 1500/3487, Loss: 0.1411
+Epoch 1/1, Batch 1600/3487, Loss: 0.1276
+Epoch 1/1, Batch 1700/3487, Loss: 0.5676
+Epoch 1/1, Batch 1800/3487, Loss: 0.0309
+Epoch 1/1, Batch 1900/3487, Loss: 0.1629
+Epoch 1/1, Batch 2000/3487, Loss: 0.0685
+Max steps reached (2000), stopping training for this epoch.
+Epoch 1 finished. Average Training Loss: 0.1805
+Generating predictions for submission...
+The following generation flags are not valid and may be ignored: ['early_stopping']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Traceback (most recent call last):
+  File "/teamspace/studios/this_studio/melvin/agents/run_benchmark.py", line 190, in <module>
+    run_benchmark()
+  File "/teamspace/studios/this_studio/melvin/agents/run_benchmark.py", line 145, in run_benchmark
+    agent.run()
+  File "/teamspace/studios/this_studio/melvin/agents/orchestrator.py", line 508, in run
+    self.run_training_script(script_path)
+  File "/teamspace/studios/this_studio/melvin/agents/orchestrator.py", line 378, in run_training_script
+    for line in process.stdout:
+                ^^^^^^^^^^^^^^
+KeyboardInterrupt

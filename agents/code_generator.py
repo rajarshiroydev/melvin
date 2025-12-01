@@ -42,8 +42,8 @@ def llm_script_generator(state: CodegenState):
     seed = state.get("seed", 42)
 
     prompt = f"""
-    You are an advanced ML engineering agent (High-Performance/GPU-Enabled).
-    Your job is to generate a FULL, SELF-CONTAINED Python training script.
+    You are an advanced ML engineering agent optimizing for SPEED and VALIDITY.
+    Your job is to generate a FULL, SELF-CONTAINED Python training script that runs in <15 MINUTES.
 
     DATASET LOCATION: "{dataset_dir}"
     
@@ -58,90 +58,80 @@ def llm_script_generator(state: CodegenState):
     - Type: {task_type}
     - Target: {target_col}
     - Classes: {classes}
+    - Total Rows: {metadata.get('num_train_rows', 'Unknown')}
 
-    HARDWARE INFO YOU MUST USE TO SET BATCH SIZE, MODEL SIZE, AND EPOCHS:
+    HARDWARE INFO (Use to set batch size):
     {json.dumps(state["hardware"], indent=2)}
 
-    Rules:
-    - If GPU VRAM < 6GB → Use smallest model (ResNet18, T5-small) and batch_size ≤ 8
-    - If GPU VRAM 6–12GB → Medium models allowed, batch_size ≤ 32
-    - If GPU VRAM > 12GB → Larger models allowed, batch_size 32–128
-    - If NO GPU: avoid heavy models, reduce batch_size drastically
-    - If RAM < 8GB: avoid loading full dataset into memory
-    - If dataset is >5M rows: reduce epochs to 1–3
-    - Always decide epochs + batch size based on hardware profile
+    DATA SUBSAMPLING REQUIREMENT (MANDATORY):
+    - You MUST explicitly execute:
+        train_df = train_df.sample(frac=0.05, random_state={seed})
 
-    SEEDING REQUIREMENTS:
-    - You MUST set all random seeds for Python, NumPy, PyTorch (CPU & CUDA) using the seed `{seed}`.
-    - Ensure deterministic behavior:
-        import random, numpy as np, torch
-        random.seed({seed}); np.random.seed({seed}); torch.manual_seed({seed})
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all({seed})
-    - Ensure DataLoader uses:
-        generator=torch.Generator().manual_seed({seed})
+    immediately after loading the training data.
+    - Perform this BEFORE any preprocessing, splitting, tokenization, encoding, or DataLoader creation.
+    - Every downstream component MUST use only this reduced DataFrame.
+    - You MUST NOT reload or reference the full dataset anywhere else in the script.
 
+    ### 0. SPEED & MEMORY RULES (CRITICAL FOR DEADLINE):
+    - **EPOCHS**: Train for **ONLY 1 EPOCH**. (Strict Limit).
+    - **PRECISION**: You MUST use Mixed Precision (FP16) via `torch.cuda.amp.GradScaler`.
+    - **BATCH SIZE**: Maximize this! Use 32+ for images, 64+ for text.
+    - **EVALUATION**: Run validation ONLY at the end of the epoch.
+    - **DATA**: Use 100% of the data (NO subsampling), but rely on 1 epoch + fast models to finish on time.
 
-
-    ### 1. MODEL SELECTION LOGIC (ARCHITECT PHASE):
-    Analyze `metadata.complexity` to choose a high-accuracy model.
+    ### 1. MODEL SELECTION (FAST ARCHITECTURES):
+    Analyze `metadata.complexity` but bias towards speed.
     
-    *   **IF IMAGE**:
+    * **IF IMAGE**:
+        - Use `resnet18` (pretrained). It is fast and robust.
+        - Avoid ResNet50 or EfficientNet unless resolution is tiny (<32x32).
+    
+    * **IF TEXT**:
         - **Task: Classification**:
-            - Low Resolution (<64x64): Use `resnet18` or `resnet34` (modify first conv layer if needed).
-            - High Resolution: Use `torchvision.models.resnet50(weights='DEFAULT')` or `efficientnet_b0`.
-        - **Task: Regression / Image-to-Image**:
-            - Build a **U-Net** architecture or deep Autoencoder with ResNet backbone.
+            - Use xgboost
+        - **Task: Seq2Seq / Text-Norm**:
+            - Use `t5-small` (CRITICAL: t5-base is too slow).
     
-    *   **IF TEXT**:
-        - **Task: Classification**:
-            - Use `bert-base-uncased` or `roberta-base`.
-            - **Fine-Tuning**: Train the FULL model (do NOT freeze body).
-        - **Task: Seq2Seq**:
-            - Use `t5-base` or `bart-base`.
+    * **IF AUDIO**:
+        - Use the specific robust loading logic below (Train/Test csv + zip extraction).
+        - Use a lightweight 1D CNN or `resnet18` on MelSpectrograms.
+        - **Audio Loader Rules**: 
+            1. Load train.csv from dataset_dir.
+            2. Extract train2.zip/test2.zip to temp folders.
+            3. Fallback: try `torchaudio` -> `librosa` -> `soundfile`.
+            4. Skip corrupted files (return zeros) to prevent crashes.
     
-    *   **IF AUDIO**:
-        - Use `torchaudio`. Convert to MelSpectrogram.
-        - Backbone: ResNet34 modified for 1-channel input (Spectrogram).
-    
-    *   **IF TABULAR**:
-        - Use XGBoost or LightGBM.
-        - To ensure compatibility across environments, ALWAYS use the minimal .fit() API:
-              model.fit(X_train, y_train)
-          Do NOT use:
-              - early_stopping_rounds
-              - callbacks
-              - eval_set
-              - EarlyStopping()
-              - custom objectives
-        - If cross-validation is needed, manually split folds and call model.fit() inside each fold.
-        - For binary classification, use model.predict_proba(test)[:, 1].
-        - For multi-class classification, use model.predict_proba(test) and follow sample_submission.csv column order.
+    * **IF TABULAR**:
+        - Use XGBoost.
+        - Use `.fit(X_train, y_train)` minimal API.
+        **NORMALIZATION RULES (DO NOT MISS):**
+            - **Multi-Class Classification**: 
+            1. Use `softmax(dim=1)`.
+            2. `softmax` -> `div(sum)` to ensure row sum=1.0.
 
-    ### 2. TRAINING CONFIGURATION:
-    - **DATA USAGE**: Use **100%** of the training data. Do NOT subset.
-    - **EPOCHS**: Train for **5 epochs**.
-    - **EARLY STOPPING**: Implement logic to stop training if validation loss doesn't improve for 3 epochs.
-    - **DEVICE**: Explicitly check `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` and move models/data to device.
-    - **AMP**: Use `torch.cuda.amp.GradScaler` (Mixed Precision) to speed up training and save VRAM.
+    ### 2. SEEDING REQUIREMENTS:
+    - You MUST set all random seeds to `{seed}`.
+    - `random.seed({seed}); np.random.seed({seed}); torch.manual_seed({seed})`
 
     ### 3. LIBRARY BEST PRACTICES:
     - **Optimizers**: NEVER import `AdamW` from `transformers`. ALWAYS use `torch.optim.AdamW`.
-    - **DataLoaders**: Set `num_workers=4` and `pin_memory=True`. 
-        - **CRITICAL**: Wrap the main execution logic in `if __name__ == "__main__":` to prevent multiprocessing crashes.
-    - **Logging**: Print training progress EVERY 10 BATCHES (e.g., "Epoch 1, Batch 10/X, Loss: ...").
-    - **Inference**: 
-        - Multi-Class: `softmax(dim=1)`.
-        - Binary/Multi-Label: `sigmoid`.
-        - Regression: No activation.
-    - For **multi-class classification (len(classes) > 2)**:
-        - Final predictions MUST be produced using `softmax(dim=1)` so that **each row sums to 1**, matching Kaggle submission requirements.
-        - Ensure the output probabilities exactly follow the column order in `sample_submission.csv`.
+    - **DataLoaders**: Set `num_workers=4`, `pin_memory=True`.
+    - **Safe Execution**: Wrap main logic in `if __name__ == "__main__":`.
+    - **Imports**: Handle `xgboost`/`transformers` imports gracefully.
 
+    ### 1. TRAINING LOOP STRATEGY (THE "TIME LIMIT" LOGIC):
+    - **Standard**: Train for 1 Epoch.
+    - **HUGE DATASET EXCEPTION (Important)**: 
+      - If `len(train_loader) > 5000`:
+      - You MUST implement a break: `if batch_idx >= 2000: break`
+      - Print "Max steps reached (2000), stopping training."
+      - This allows "seeing" the full dataset structure without timing out.
 
     ### 4. MANDATORY SUBMISSION LOGIC:
-    - You MUST generate a `submission.csv` file at the end.
+    - Generate `submission.csv`.
     - Load `sample_submission.csv` to ensure correct ID sorting.
+    - **Multi-Class**: Use `softmax(dim=1)` so rows sum to 1.
+    - **Binary**: Use `sigmoid`.
     - Save to current directory (`.`).
     - Print "Submission saved to submission.csv".
 
@@ -158,9 +148,13 @@ def llm_script_generator(state: CodegenState):
 
     raw_script = response["choices"][0]["message"]["content"]
 
-    # Clean markdown
-    if raw_script.strip().startswith("```"):
-        raw_script = raw_script.replace("```python", "").replace("```", "").strip()
+    # Stronger Markdown Cleanup
+    raw_script = raw_script.strip()
+    if raw_script.startswith("```"):
+        raw_script = raw_script.split("\n", 1)[1]
+    if raw_script.endswith("```"):
+        raw_script = raw_script.rsplit("\n", 1)[0]
+    raw_script = raw_script.replace("```python", "").replace("```", "")
 
     state["script"] = raw_script
     return state
@@ -210,6 +204,39 @@ def llm_script_fixer(state: FixState):
         fixed_script = fixed_script.replace("python", "").replace("```", "").strip()
     state["fixed_script"] = fixed_script
     return state
+
+
+def llm_reason_about_step(step, info, model="gemini/gemini-2.5-flash"):
+    """
+    Generates short reflective reasoning for logs:
+    - how the agent interprets the task/modality
+    - why it chose a strategy
+    - what it will try next time
+    
+    Output is SHORT and SAFE (no chain-of-thought, only conclusions).
+    """
+    prompt = f"""
+    You are an ML planning agent. Produce a brief but deep explanation 
+    (no chain-of-thought) of the following:
+
+    STEP: {step}
+    INFO: {json.dumps(info, indent=2)}
+
+    Provide:
+    1. How did you decide the task & modality of the dataset?
+    2. Why the chosen strategy makes sense for this task?
+    3. How the agent would self-improve next time?
+    """
+
+    try:
+        resp = completion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
+        return resp["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return "Reasoning unavailable due to LLM error."
 
 
 # ---------------------------------------------------------

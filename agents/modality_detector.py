@@ -101,38 +101,84 @@ def profile_data_complexity(df, public_dir):
 
     return stats
 
+# ---------------------------------------------------------
+# SMART FILE DETECTOR (The Fix)
+# ---------------------------------------------------------
+def find_dataset_files(public_dir: Path):
+    """
+    Intelligently identifies the correct train and test files 
+    even if they are named 'en_train.csv' or 'test_2.csv'.
+    """
+    files = [f.name for f in public_dir.glob("*.csv")]
+    
+    train_file = "train.csv"
+    test_file = "test.csv"
+    
+    # 1. Look for 'train' in filename (pick largest if multiple)
+    train_candidates = [f for f in files if "train" in f.lower()]
+    if train_candidates:
+        # Sort by file size (largest is usually the real train set)
+        train_candidates.sort(key=lambda x: (public_dir / x).stat().st_size, reverse=True)
+        train_file = train_candidates[0]
+        
+    # 2. Look for 'test' in filename
+    test_candidates = [f for f in files if "test" in f.lower()]
+    if test_candidates:
+        test_candidates.sort(key=lambda x: (public_dir / x).stat().st_size, reverse=True)
+        test_file = test_candidates[0]
+
+    return train_file, test_file
 
 # ---------------------------------------------------------
 # Dataset Metadata Collector (sync, deterministic)
 # ---------------------------------------------------------
 def collect_dataset_metadata(public_dir: Path):
+    # Detect actual filenames
+    train_fname, test_fname = find_dataset_files(public_dir)
+
     train_path = public_dir / "train.csv"
     test_path = public_dir / "test.csv"
-    sample_path = public_dir / "sample_submission.csv"
+    
+    # --- FIX: Read only 100 rows to prevent IO Crash on Metadata Check ---
+    try:
+        df_train = pd.read_csv(train_path, nrows=100) if train_path.exists() else pd.DataFrame()
+    except Exception:
+        df_train = pd.DataFrame()
+        
+    try:
+        df_test = pd.read_csv(test_path, nrows=100) if test_path.exists() else pd.DataFrame()
+    except Exception:
+        df_test = pd.DataFrame()
 
-    # Robust read (handle missing files for edge cases)
-    df_train = pd.read_csv(train_path) if train_path.exists() else pd.DataFrame()
-    df_test = pd.read_csv(test_path) if test_path.exists() else pd.DataFrame()
+    # Estimate total rows safely
+    num_train_rows = 0
+    if train_path.exists():
+        try:
+            # Fast line count
+            with open(train_path, "rb") as f:
+                num_train_rows = sum(1 for _ in f) - 1
+        except:
+            num_train_rows = 1000
 
-    # Calculate Profiling Stats
     dataset_size_mb = get_directory_size_mb(public_dir)
     complexity_stats = profile_data_complexity(df_train, public_dir)
     description_text = read_description_text(public_dir)
 
     metadata = {
         "description": description_text,
+        "train_filename": train_fname,
+        "test_filename": test_fname,
         "train_columns": list(df_train.columns),
         "test_columns": list(df_test.columns),
         "dtypes": df_train.dtypes.astype(str).to_dict(),
         "sample_rows": df_train.head(3).to_dict(orient="records"),
-        "num_train_rows": len(df_train),
+        "num_train_rows": num_train_rows, # Uses safe count
         "dataset_size_mb": dataset_size_mb,
         "complexity": complexity_stats,
         "directory_files": [p.name for p in public_dir.iterdir()],
     }
 
     return metadata
-
 
 # ---------------------------------------------------------
 # LangGraph State
