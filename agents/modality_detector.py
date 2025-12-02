@@ -136,29 +136,41 @@ def collect_dataset_metadata(public_dir: Path):
     # Detect actual filenames
     train_fname, test_fname = find_dataset_files(public_dir)
 
-    train_path = public_dir / "train.csv"
-    test_path = public_dir / "test.csv"
-    
-    # --- FIX: Read only 100 rows to prevent IO Crash on Metadata Check ---
+    train_path = public_dir / train_fname
+    test_path = public_dir / test_fname
+
+    # --- FAULT TOLERANT CSV READ ---
     try:
-        df_train = pd.read_csv(train_path, nrows=100) if train_path.exists() else pd.DataFrame()
+        df_train = pd.read_csv(train_path, nrows=100)
     except Exception:
         df_train = pd.DataFrame()
-        
+
     try:
-        df_test = pd.read_csv(test_path, nrows=100) if test_path.exists() else pd.DataFrame()
+        df_test = pd.read_csv(test_path, nrows=100)
     except Exception:
         df_test = pd.DataFrame()
 
-    # Estimate total rows safely
+    # --- NEW: AUDIO FILE DETECTION ---
+    audio_dirs = {}
+    for dname in ["train2", "test2"]:
+        dpath = public_dir / dname
+        if dpath.exists() and dpath.is_dir():
+            audio_files = []
+            for ext in ["*.aif", "*.aiff", "*.wav", "*.flac"]:
+                audio_files.extend([str(p) for p in dpath.rglob(ext)])
+            audio_dirs[dname] = {
+                "path": str(dpath),
+                "num_audio_files": len(audio_files),
+                "example_audio": audio_files[:3],
+            }
+
+    # Row estimation
     num_train_rows = 0
-    if train_path.exists():
-        try:
-            # Fast line count
-            with open(train_path, "rb") as f:
-                num_train_rows = sum(1 for _ in f) - 1
-        except:
-            num_train_rows = 1000
+    try:
+        with open(train_path, "rb") as f:
+            num_train_rows = max(0, sum(1 for _ in f) - 1)
+    except:
+        num_train_rows = 0
 
     dataset_size_mb = get_directory_size_mb(public_dir)
     complexity_stats = profile_data_complexity(df_train, public_dir)
@@ -172,10 +184,12 @@ def collect_dataset_metadata(public_dir: Path):
         "test_columns": list(df_test.columns),
         "dtypes": df_train.dtypes.astype(str).to_dict(),
         "sample_rows": df_train.head(3).to_dict(orient="records"),
-        "num_train_rows": num_train_rows, # Uses safe count
+        "num_train_rows": num_train_rows,
         "dataset_size_mb": dataset_size_mb,
         "complexity": complexity_stats,
         "directory_files": [p.name for p in public_dir.iterdir()],
+        "audio_dirs": audio_dirs,      # <---- NEW FIELD FOR AUDIO
+        "has_audio": len(audio_dirs) > 0,
     }
 
     return metadata
@@ -193,6 +207,9 @@ class ModalityState(dict):
 # ---------------------------------------------------------
 def llm_modality_detector(state: ModalityState):
     metadata = state["metadata"]
+
+    if metadata.get("has_audio", False):
+        metadata["forced_modality_hint"] = "audio"
 
     prompt = f"""
     You are an ML engineering agent.

@@ -35,6 +35,7 @@ sys.stderr = sys.stdout
 
 # The 4 datasets required by the assignment except whale
 TARGET_DATASETS = [
+    "the-icml-2013-whale-challenge-right-whale-redux",
     "text-normalization-challenge-english-language",
     "spooky-author-identification",
     "tabular-playground-series-may-2022",
@@ -65,6 +66,11 @@ MEDAL_THRESHOLDS = {
         "metric": "ROC-AUC",
         "direction": "max",
         "threshold": 0.9205  # Rank 330 (Top 10% of 3308 teams)
+    },
+    "the-icml-2013-whale-challenge-right-whale-redux": {
+        "metric": "ROC-AUC",
+        "direction": "max",
+        "threshold": 0.90521
     }
 }
 
