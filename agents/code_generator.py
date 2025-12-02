@@ -47,27 +47,33 @@ Return ONLY valid Python code.
 # PROMPT: Final Full-Scale Trainer
 # ---------------------------------------------------------
 FINAL_TRAIN_PROMPT = """
-You are an ML Engineer. You have identified the WINNING strategy.
-Now, write the FINAL PRODUCTION SCRIPT to train on the FULL DATASET and generate the submission.
+    You are an ML Engineer. You have identified the WINNING strategy.
+    Now, write the FINAL PRODUCTION SCRIPT to train on the FULL DATASET and generate the submission.
 
-WINNING STRATEGY: {model_name}
-CODE REFERENCE (The prototype that worked):
-{prototype_code}
-
-INSTRUCTIONS:
-1. **FULL DATA**: Load the ENTIRE dataset. Do NOT subsample.
-2. **ROBUSTNESS**: Add error handling.
-3. **SUBMISSION**:
-   - Predict on `test.csv`.
-   - Ensure ID column types match `sample_submission.csv`.
-   - Save to `submission.csv`.
-   - Check if multiclass probabilities sum to 1.
-4. **TIME LIMIT**:
-   - Implement a time check. If training > 45 mins, stop and predict with current weights.
-5. **IMPORTS**: Just import what you need. Do not try to install packages.
-
-Return ONLY valid Python code.
-"""
+    WINNING STRATEGY: {model_name}
+    
+    CODE REFERENCE (The prototype that worked - COPY SETUP FROM HERE):
+    ```python
+    {prototype_code}
+    
+    INSTRUCTIONS:
+        INHERIT SETUP: Copy imports, class definitions, and setup exactly from the REFERENCE.
+        DATA LOAD: Load the ENTIRE dataset.
+        VALIDATION STRATEGY (CRITICAL):
+            You MUST split the data (e.g., 90% Train, 10% Validation). Do NOT train on 100% data without validation.
+            We need validation metrics to prevent overfitting.
+        TRAINING ROBUSTNESS:
+            Implement Early Stopping (patience=3) based on Validation Loss/Metric.
+            Implement Model Checkpointing: Save the best model during training, and load it back before predicting on Test.
+            If using Transformers/HF: set load_best_model_at_end=True, save_total_limit=1.
+            If using Keras/TF: use ModelCheckpoint(save_best_only=True).
+            If using PyTorch: save state_dict when val_score improves.
+        SUBMISSION:
+            Predict on test.csv using the BEST saved model.
+            Ensure ID column types match sample_submission.csv.
+            Save to submission.csv.
+            Return ONLY valid Python code.
+    """
 
 async def generate_candidate_script(candidate_info, modality_info, metadata, dataset_dir, seed=42):
     prompt = CANDIDATE_PROMPT.format(

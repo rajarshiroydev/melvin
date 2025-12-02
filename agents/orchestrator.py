@@ -15,6 +15,7 @@ from pathlib import Path
 from code_generator import generate_candidate_script, generate_final_script, fix_training_script_llm
 from modality_detector import collect_dataset_metadata, detect_modality_llm
 from retriever import retrieve_model_candidates
+from refiner import propose_ablations, propose_refinements, apply_refinement_llm
 
 class MLEAgent:
     def __init__(self, competition_id, runs_base_dir, seed=42):
@@ -219,90 +220,154 @@ class MLEAgent:
         print("[INFO] Dataset prepared.")
 
     # ------------------------------------------------------------------
-    # MAIN PIPELINE (PHASE 1)
+    # MAIN LOOP
     # ------------------------------------------------------------------
     def run(self):
         self.prepare_data()
-        
-        # 1. Detect Task
         print("[1/5] Analyzing Task...")
         metadata = collect_dataset_metadata(self.prepared_public)
         modality_info = asyncio.run(detect_modality_llm(metadata))
         print(f"      Detected: {modality_info['modality']} | {modality_info['task_type']}")
 
-        # 2. Retrieve Candidates
-        print("[2/5] Searching for SOTA models...")
-        candidates = asyncio.run(retrieve_model_candidates(
+        print("[2/5] Searching & Strategizing...")
+        retrieval_data = asyncio.run(retrieve_model_candidates(
             metadata, self.competition_id, modality_info['task_type'], modality_info['modality']
         ))
-        print(f"      Found {len(candidates)} candidates: {[c['model_name'] for c in candidates]}")
+        
+        # EXTRACT METRIC DIRECTION (Source of Truth: The Researcher)
+        metric_dir = retrieval_data.get("metric_direction", "maximize").lower()
+        candidates = retrieval_data["candidates"]
+        print(f"      Metric Goal: {metric_dir.upper()}")
+        print(f"      Found {len(candidates)} candidates: {candidates}")
 
-        # 3. Tournament
-        print("[3/5] Running Candidate Tournament (Subsampled)...")
-        best_candidate = None
-        best_score = -float("inf") if self.maximize_metric else float("inf")
-        best_code = None
+        print("[3/5] Candidate Tournament...")
+        
+        # Init Best Score based on direction
+        best_candidate, best_code = None, None
+        
+        # LOGIC FIX: Ensure initialization matches comparison logic
+        is_minimizing = (metric_dir == "minimize")
+        
+        if is_minimizing:
+            best_score = float('inf')
+        else:
+            best_score = -float('inf')
         
         for i, cand in enumerate(candidates):
             print(f"      Evaluating Candidate {i+1}: {cand['model_name']}...")
-            script_name = f"candidate_{i}.py"
-            script_path = self.output_dir / script_name
-            
+            path = self.output_dir / f"candidate_{i}.py"
             code = asyncio.run(generate_candidate_script(
                 cand, modality_info, metadata, self.prepared_public, self.seed
             ))
-            script_path.write_text(code)
-
-            # Execute with Retries for Dependencies
-            score = self.execute_candidate_robust(script_path, timeout=600)
+            path.write_text(code)
+            
+            score = self.execute_candidate_robust(path, timeout=600)
             print(f"      -> Score: {score}")
             
+            # SELECTION LOGIC (Corrected)
             if score is not None:
                 if best_candidate is None:
                     best_score = score
                     best_candidate = cand
                     best_code = code
                 else:
-                    better = (score > best_score) if self.maximize_metric else (score < best_score)
+                    # FIX: Use 'is_minimizing' here, NOT self.maximize_metric
+                    if is_minimizing:
+                        better = score < best_score
+                    else:
+                        better = score > best_score
+                        
                     if better:
+                        print(f"      [NEW LEADER] {score} is better than {best_score}")
                         best_score = score
                         best_candidate = cand
-                        best_code = code
+                        best_code = path.read_text() # Read file again to capture any AI fixes
 
-
-        if best_candidate is None:
+        if not best_candidate:
             print("[CRITICAL] All candidates failed. Falling back to Candidate 0.")
             best_candidate = candidates[0]
-            best_code = script_path.read_text()
+            try:
+                best_code = self.output_dir.joinpath("candidate_0.py").read_text()
+            except:
+                best_code = asyncio.run(generate_candidate_script(best_candidate, modality_info, metadata, self.prepared_public, self.seed))
 
-        print(f"[WINNER] Best Strategy: {best_candidate['model_name']} (Score: {best_score})")
+        print(f"[WINNER] {best_candidate['model_name']} (Score: {best_score})")
+        
+        # ------------------------------------------------------------------
+        # PHASE 2: REFINEMENT (MLE-STAR Implementation)
+        # ------------------------------------------------------------------
+        print("[3.5/5] Running Refinement Loop (MLE-STAR)...")        
+        # 1. Ask what to tune (Ablation Study)
+        # We pass the best_code (which is the subsampled candidate script)
+        ablations = asyncio.run(propose_ablations(best_code, modality_info['task_type'], metric_dir))
+        
+        # Limit to 1 major component to save time/tokens (e.g. usually "Epochs" or "LR")
+        if ablations:
+            target = ablations[0] 
+            print(f"      Refining Target: {target['component_name']}...")
+            
+            # 2. Ask how to tune it (Planning)
+            variations = asyncio.run(propose_refinements(target))
+            
+            for var in variations:
+                print(f"      Testing Variation: {var['variant_name']} ({var['instruction']})...")
+                
+                # 3. Apply change (Coding)
+                refined_code = asyncio.run(apply_refinement_llm(best_code, var['instruction']))
+                
+                if refined_code:
+                    script_name = f"refine_{var['variant_name']}.py"
+                    path = self.output_dir / script_name
+                    path.write_text(refined_code)
+                    
+                    # 4. Execute (Validation)
+                    # We use the robust executor to handle any syntax errors introduced
+                    score = self.execute_candidate_robust(path, timeout=600)
+                    print(f"      -> Score: {score}")
+                    
+                    # 5. Compare
+                    if score is not None:
+                        if is_minimizing:
+                            better = score < best_score
+                        else:
+                            better = score > best_score
+                            
+                        if better:
+                            print(f"      [IMPROVEMENT] New Best Score: {score}")
+                            best_score = score
+                            best_code = refined_code # Update the prototype!
+                            best_candidate["model_name"] += f" ({var['variant_name']})"
+        else:
+            print("      [INFO] No obvious refinements found. Proceeding.")
 
-        # 4. Final Training
+        # ------------------------------------------------------------------
+        # PHASE 3: FINAL TRAIN
+        # ------------------------------------------------------------------
         print("[4/5] Training Final Model on Full Data...")
-        final_script_path = self.output_dir / "train.py"
+        final_path = self.output_dir / "train.py"
+        
+        if best_code is None: best_code = ""
+        
+        # Generate Final Script (Injects full data loading, removes subsampling)
         final_code = asyncio.run(generate_final_script(
             best_candidate, best_code, modality_info, metadata, self.prepared_public, self.seed
         ))
-        final_script_path.write_text(final_code)
-
-        success = self.run_training_script_robust(final_script_path, timeout=86400)
+        final_path.write_text(final_code)
         
-        # 5. Grading
-        if success:
+        if self.run_training_script_robust(final_path, timeout=86400):
             print("[5/5] Grading...")
             self.grade_submission()
         else:
             print("[FAIL] Final training failed.")
-
     # ------------------------------------------------------------------
     # EXECUTION HELPERS (ROBUST & STREAMING)
     # ------------------------------------------------------------------
     def execute_candidate_robust(self, script_path, timeout=600):
-        start_time = time.time()
         # Allow up to 5 repair attempts per candidate
-        max_retries = 5
+        max_retries = 10
 
         for attempt in range(max_retries):
+            start_time = time.time()
             try:
                 # 1. Run the script
                 proc = subprocess.Popen(

@@ -23,7 +23,10 @@ def search_web(query, max_results=5):
 
 async def retrieve_model_candidates(metadata, competition_id, task_type, modality):
     """
-    Returns a list of dictionaries: [{'model_name': '...', 'reasoning': '...', 'libs': '...'}]
+    Returns: {
+        "metric_direction": "maximize" | "minimize",
+        "candidates": [{model_info}, ...]
+    }
     """
     
     # 1. Construct Queries
@@ -46,7 +49,11 @@ async def retrieve_model_candidates(metadata, competition_id, task_type, modalit
     You are a Senior ML Researcher. 
     Analyze the search results below for the Kaggle competition "{competition_id}" (or similar {task_type} tasks).
     
-    Identify 3 DISTINCT, HIGH-PERFORMING approaches.
+    TASKS:
+    1. Identify the EVALUATION METRIC direction (maximize or minimize).
+       - LogLoss, RMSE, MAE -> "minimize"
+       - Accuracy, AUC, F1 -> "maximize"
+    2. Identify 3 DISTINCT, HIGH-PERFORMING approaches.
     
     SEARCH CONTEXT:
     {context_str}
@@ -57,20 +64,23 @@ async def retrieve_model_candidates(metadata, competition_id, task_type, modalit
     Rows: {metadata.get('num_train_rows', 'Unknown')}
     
     RULES:
-    1. Diversity: Don't propose 3 variants of the same model. Propose diverse robust approaches (e.g. 1 Gradient Boosting, 1 Neural Net, 1 Linear/Baseline).
+    1. Diversity: Don't propose 3 variants of the same model. Propose diverse robust approaches.
     2. Feasibility: Must be implementable in Python with standard libraries.
     3. Output JSON ONLY.
     
     JSON SCHEMA:
-    [
-      {{
-        "model_name": "Name of approach (e.g. CatBoost with Optuna)",
-        "library": "Main library (e.g. catboost)",
-        "reasoning": "Why this works based on search results",
-        "implementation_tips": "Key hyperparameters or preprocessing mentioned in search"
-      }},
-      ...
-    ]
+    {{
+      "metric_direction": "maximize" OR "minimize",
+      "candidates": [
+          {{
+            "model_name": "Name of approach",
+            "library": "Main library (e.g. catboost)",
+            "reasoning": "Why this works based on search results",
+            "implementation_tips": "Key hyperparameters or preprocessing"
+          }},
+          ...
+      ]
+    }}
     """
 
     try:
@@ -83,16 +93,25 @@ async def retrieve_model_candidates(metadata, competition_id, task_type, modalit
 
         raw = response["choices"][0]["message"]["content"]
         
-        # Cleaning JSON
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
+        # Cleaning JSON (Look for Curly Braces now, not Brackets)
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
         json_str = raw[start:end]
-        candidates = json.loads(json_str)
-        return candidates
+        result = json.loads(json_str)
+        
+        # Validate structure
+        if "candidates" not in result:
+            raise ValueError("Missing candidates key")
+            
+        return result
+
     except Exception as e:
         print(f"[ERR] Failed to parse retriever JSON: {e}")
-        # Fallback candidates
-        return [
-            {"model_name": "Baseline XGBoost", "library": "xgboost", "reasoning": "Robust baseline", "implementation_tips": "Use early stopping"},
-            {"model_name": "LightGBM", "library": "lightgbm", "reasoning": "Fast and accurate", "implementation_tips": "Use leaf-wise growth"}
-        ]
+        # Fallback now returns the Dictionary structure, not just a list
+        return {
+            "metric_direction": "maximize", # Default assumption
+            "candidates": [
+                {"model_name": "Baseline XGBoost", "library": "xgboost", "reasoning": "Robust baseline", "implementation_tips": "Use early stopping"},
+                {"model_name": "LightGBM", "library": "lightgbm", "reasoning": "Fast and accurate", "implementation_tips": "Use leaf-wise growth"}
+            ]
+        }
