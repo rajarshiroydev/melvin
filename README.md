@@ -38,9 +38,9 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 ### Deliverables
 1. ✅ The agent runs end-to-end with a single command. While in the melvin directory use `python agents/orchestratory.py -c <competition-id>` to initiate the agent. The agent will find the dataset, generate training script, generate a submission.csv and get a score against it.
 2. ✅ In order to generate the script, the agent doesn't rely on LLM hope shot. Here is how it generates a high quality training script:
-    - A a research agent searches the web for the top solutions of the given problem statement, finds the libraries and dependencies that the solution requires and then based on this info, generates three candidate training scripts.
+    - A research agent searches the web for the top solutions of the given problem statement, finds the libraries and dependencies that the solution requires and then based on this info, generates three candidate training scripts.
     - These scripts are then individually run on a subset of the dataset to quickly assess which method performs the best.
-    - Once the best candidate is selected, a script refinement layer tries to improve the best candidate script by doing abalations.
+    - Once the best candidate is selected, a script refinement layer tries to improve the best candidate script even further by doing abalations.
     - Based on whether an even better script was generated or not, the final script that performed the best on the subset data is chosen for training on the full dataset.
     - Finally a submission.csv is generated after the full training and inferencing on the test dataset.
 3. How it would self-improve next?
