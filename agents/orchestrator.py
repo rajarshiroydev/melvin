@@ -234,18 +234,20 @@ class MLEAgent:
             metadata, self.competition_id, modality_info['task_type'], modality_info['modality']
         ))
         
-        # EXTRACT METRIC DIRECTION (Source of Truth: The Researcher)
+        # EXTRACT METRIC DIRECTION
         metric_dir = retrieval_data.get("metric_direction", "maximize").lower()
         candidates = retrieval_data["candidates"]
         print(f"      Metric Goal: {metric_dir.upper()}")
-        print(f"      Found {len(candidates)} candidates: {candidates}")
+        print(f"      Found {len(candidates)} candidates.")
 
         print("[3/5] Candidate Tournament...")
         
-        # Init Best Score based on direction
-        best_candidate, best_code = None, None
+        # FIX: Increase Timeout to 30 minutes (1800s)
+        CANDIDATE_TIMEOUT = 1800 
         
-        # LOGIC FIX: Ensure initialization matches comparison logic
+        best_candidate = None
+        best_code = None
+        
         is_minimizing = (metric_dir == "minimize")
         
         if is_minimizing:
@@ -261,17 +263,18 @@ class MLEAgent:
             ))
             path.write_text(code)
             
-            score = self.execute_candidate_robust(path, timeout=600)
+            # PASS INCREASED TIMEOUT HERE
+            score = self.execute_candidate_robust(path, timeout=CANDIDATE_TIMEOUT)
             print(f"      -> Score: {score}")
             
-            # SELECTION LOGIC (Corrected)
+            # SELECTION LOGIC
             if score is not None:
                 if best_candidate is None:
                     best_score = score
                     best_candidate = cand
-                    best_code = code
+                    best_code = path.read_text() # Capture fixed code
+                    print(f"      [NEW LEADER] Score: {best_score}")
                 else:
-                    # FIX: Use 'is_minimizing' here, NOT self.maximize_metric
                     if is_minimizing:
                         better = score < best_score
                     else:
@@ -281,7 +284,7 @@ class MLEAgent:
                         print(f"      [NEW LEADER] {score} is better than {best_score}")
                         best_score = score
                         best_candidate = cand
-                        best_code = path.read_text() # Read file again to capture any AI fixes
+                        best_code = path.read_text()
 
         if not best_candidate:
             print("[CRITICAL] All candidates failed. Falling back to Candidate 0.")
@@ -292,27 +295,24 @@ class MLEAgent:
                 best_code = asyncio.run(generate_candidate_script(best_candidate, modality_info, metadata, self.prepared_public, self.seed))
 
         print(f"[WINNER] {best_candidate['model_name']} (Score: {best_score})")
-        
+
         # ------------------------------------------------------------------
         # PHASE 2: REFINEMENT (MLE-STAR Implementation)
         # ------------------------------------------------------------------
-        print("[3.5/5] Running Refinement Loop (MLE-STAR)...")        
-        # 1. Ask what to tune (Ablation Study)
-        # We pass the best_code (which is the subsampled candidate script)
+        print("[3.5/5] Running Refinement Loop (MLE-STAR)...")
+        from refiner import propose_ablations, propose_refinements, apply_refinement_llm
+        
         ablations = asyncio.run(propose_ablations(best_code, modality_info['task_type'], metric_dir))
         
-        # Limit to 1 major component to save time/tokens (e.g. usually "Epochs" or "LR")
         if ablations:
             target = ablations[0] 
             print(f"      Refining Target: {target['component_name']}...")
             
-            # 2. Ask how to tune it (Planning)
             variations = asyncio.run(propose_refinements(target))
             
             for var in variations:
                 print(f"      Testing Variation: {var['variant_name']} ({var['instruction']})...")
                 
-                # 3. Apply change (Coding)
                 refined_code = asyncio.run(apply_refinement_llm(best_code, var['instruction']))
                 
                 if refined_code:
@@ -320,12 +320,10 @@ class MLEAgent:
                     path = self.output_dir / script_name
                     path.write_text(refined_code)
                     
-                    # 4. Execute (Validation)
-                    # We use the robust executor to handle any syntax errors introduced
-                    score = self.execute_candidate_robust(path, timeout=600)
+                    # PASS INCREASED TIMEOUT HERE AS WELL
+                    score = self.execute_candidate_robust(path, timeout=CANDIDATE_TIMEOUT)
                     print(f"      -> Score: {score}")
                     
-                    # 5. Compare
                     if score is not None:
                         if is_minimizing:
                             better = score < best_score
@@ -335,7 +333,7 @@ class MLEAgent:
                         if better:
                             print(f"      [IMPROVEMENT] New Best Score: {score}")
                             best_score = score
-                            best_code = refined_code # Update the prototype!
+                            best_code = refined_code 
                             best_candidate["model_name"] += f" ({var['variant_name']})"
         else:
             print("      [INFO] No obvious refinements found. Proceeding.")
@@ -348,7 +346,6 @@ class MLEAgent:
         
         if best_code is None: best_code = ""
         
-        # Generate Final Script (Injects full data loading, removes subsampling)
         final_code = asyncio.run(generate_final_script(
             best_candidate, best_code, modality_info, metadata, self.prepared_public, self.seed
         ))
@@ -359,12 +356,13 @@ class MLEAgent:
             self.grade_submission()
         else:
             print("[FAIL] Final training failed.")
+
     # ------------------------------------------------------------------
     # EXECUTION HELPERS (ROBUST & STREAMING)
     # ------------------------------------------------------------------
     def execute_candidate_robust(self, script_path, timeout=600):
         # Allow up to 5 repair attempts per candidate
-        max_retries = 10
+        max_retries = 5
 
         for attempt in range(max_retries):
             start_time = time.time()

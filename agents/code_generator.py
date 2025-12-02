@@ -26,9 +26,10 @@ CRITICAL CONSTRAINTS (SPEED IS #1):
    - `df = pd.read_csv(..., nrows=20000)` or `df = df.sample(n=20000)`.
    - DO NOT train on the full dataset. This is a quick viability test.
 2. **VALIDATION**:
-   - Use a simple 80/20 Holdout split.
+   - Use a simple 80/20 Holdout split, UNLESS using a library that handles validation internally. In that case, follow the library's best practices.
    - Calculate the metric on the 20% holdout.
-3. **OUTPUT FORMAT**:
+3. **Efficiency**: Implement Early Stopping (patience=3) monitoring validation loss/metric. This allows you to set high max_epochs (e.g. 10 or 20) without wasting time.
+4. **OUTPUT FORMAT**:
    - The script MUST print the final score on the LAST LINE exactly like this:
      `FINAL_SCORE: 0.1234`
    - Do NOT generate a submission.csv yet. We are just testing the model.
