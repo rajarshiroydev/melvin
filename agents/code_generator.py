@@ -1,153 +1,92 @@
 import os
 import json
 from pathlib import Path
-
 from litellm import completion
-from langgraph.graph import StateGraph
-from dotenv import load_dotenv
-
-load_dotenv()
-
 
 # ---------------------------------------------------------
-# State Definitions
+# PROMPT: Candidate Generator (Strict Subsampling)
 # ---------------------------------------------------------
-class CodegenState(dict):
-    modality: str
-    task_type: str
-    target_col: str
-    classes: list
-    metadata: dict
-    dataset_dir: str
-    seed: int
-    script: str
-    hardware: dict
+CANDIDATE_PROMPT = """
+You are an ML Engineer implementing a specific strategy found via research.
 
-class FixState(dict):
-    script: str
-    error_log: str
-    fixed_script: str
+STRATEGY: {model_name}
+LIBRARY: {library}
+TIPS: {implementation_tips}
 
+DATASET: {dataset_dir}
+TARGET: {target_col}
+TASK: {task_type}
+METADATA: {metadata_json}
+
+Your goal: Write a Python Training Script to EVALUATE this specific strategy.
+
+CRITICAL CONSTRAINTS (SPEED IS #1):
+1. **SUBSAMPLING IS MANDATORY**: 
+   - You MUST load ONLY the first 20,000 rows or sample 20% of data (whichever is smaller).
+   - `df = pd.read_csv(..., nrows=20000)` or `df = df.sample(n=20000)`.
+   - DO NOT train on the full dataset. This is a quick viability test.
+2. **VALIDATION**:
+   - Use a simple 80/20 Holdout split, UNLESS using a library that handles validation internally. In that case, follow the library's best practices.
+   - Calculate the metric on the 20% holdout.
+3. **Efficiency**: Implement Early Stopping (patience=3) monitoring validation loss/metric. This allows you to set high max_epochs (e.g. 10 or 20) without wasting time.
+4. **OUTPUT FORMAT**:
+   - The script MUST print the final score on the LAST LINE exactly like this:
+     `FINAL_SCORE: 0.1234`
+   - Do NOT generate a submission.csv yet. We are just testing the model.
+
+BOILERPLATE:
+- Set random seeds ({seed}).
+- Handle missing values (SimpleImputer) and Categoricals (LabelEncoder) robustly.
+- **IMPORTS**: Just import the libraries you need (e.g. `import catboost`). 
+  - **DO NOT** try to install them with `subprocess` or `pip`. 
+  - If a library is missing, the environment will handle it automatically.
+
+Return ONLY valid Python code.
+"""
 
 # ---------------------------------------------------------
-# NODE: Script Generator (Creator)
+# PROMPT: Final Full-Scale Trainer
 # ---------------------------------------------------------
-def llm_script_generator(state: CodegenState):
-    modality = state["modality"]
-    task_type = state["task_type"]
-    target_col = state["target_col"]
-    classes = state.get("classes", [])
-    metadata = state["metadata"]
-    dataset_dir = state["dataset_dir"]
-    seed = state.get("seed", 42)
+FINAL_TRAIN_PROMPT = """
+    You are an ML Engineer. You have identified the WINNING strategy.
+    Now, write the FINAL PRODUCTION SCRIPT to train on the FULL DATASET and generate the submission.
 
-    prompt = f"""
-    You are an advanced ML engineering agent (High-Performance/GPU-Enabled).
-    Your job is to generate a FULL, SELF-CONTAINED Python training script.
-
-    DATASET LOCATION: "{dataset_dir}"
+    WINNING STRATEGY: {model_name}
     
-    TASK DESCRIPTION (from README):
-    \"\"\"{metadata.get("description", "No description provided.")}\"\"\"
-
-    METADATA & PROFILING:
-    {json.dumps({k: v for k, v in metadata.items() if k != "description"}, indent=2)}
-
-    TASK:
-    - Modality: {modality}
-    - Type: {task_type}
-    - Target: {target_col}
-    - Classes: {classes}
-
-    HARDWARE INFO YOU MUST USE TO SET BATCH SIZE, MODEL SIZE, AND EPOCHS:
-    {json.dumps(state["hardware"], indent=2)}
-
-    Rules:
-    - If GPU VRAM < 6GB → Use smallest model (ResNet18, T5-small) and batch_size ≤ 8
-    - If GPU VRAM 6–12GB → Medium models allowed, batch_size ≤ 32
-    - If GPU VRAM > 12GB → Larger models allowed, batch_size 32–128
-    - If NO GPU: avoid heavy models, reduce batch_size drastically
-    - If RAM < 8GB: avoid loading full dataset into memory
-    - If dataset is >5M rows: reduce epochs to 1–3
-    - Always decide epochs + batch size based on hardware profile
-
-    SEEDING REQUIREMENTS:
-    - You MUST set all random seeds for Python, NumPy, PyTorch (CPU & CUDA) using the seed `{seed}`.
-    - Ensure deterministic behavior:
-        import random, numpy as np, torch
-        random.seed({seed}); np.random.seed({seed}); torch.manual_seed({seed})
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all({seed})
-    - Ensure DataLoader uses:
-        generator=torch.Generator().manual_seed({seed})
-
-
-
-    ### 1. MODEL SELECTION LOGIC (ARCHITECT PHASE):
-    Analyze `metadata.complexity` to choose a high-accuracy model.
+    CODE REFERENCE (The prototype that worked - COPY SETUP FROM HERE):
+    ```python
+    {prototype_code}
     
-    *   **IF IMAGE**:
-        - **Task: Classification**:
-            - Low Resolution (<64x64): Use `resnet18` or `resnet34` (modify first conv layer if needed).
-            - High Resolution: Use `torchvision.models.resnet50(weights='DEFAULT')` or `efficientnet_b0`.
-        - **Task: Regression / Image-to-Image**:
-            - Build a **U-Net** architecture or deep Autoencoder with ResNet backbone.
-    
-    *   **IF TEXT**:
-        - **Task: Classification**:
-            - Use `bert-base-uncased` or `roberta-base`.
-            - **Fine-Tuning**: Train the FULL model (do NOT freeze body).
-        - **Task: Seq2Seq**:
-            - Use `t5-base` or `bart-base`.
-    
-    *   **IF AUDIO**:
-        - Use `torchaudio`. Convert to MelSpectrogram.
-        - Backbone: ResNet34 modified for 1-channel input (Spectrogram).
-    
-    *   **IF TABULAR**:
-        - Use XGBoost or LightGBM.
-        - To ensure compatibility across environments, ALWAYS use the minimal .fit() API:
-              model.fit(X_train, y_train)
-          Do NOT use:
-              - early_stopping_rounds
-              - callbacks
-              - eval_set
-              - EarlyStopping()
-              - custom objectives
-        - If cross-validation is needed, manually split folds and call model.fit() inside each fold.
-        - For binary classification, use model.predict_proba(test)[:, 1].
-        - For multi-class classification, use model.predict_proba(test) and follow sample_submission.csv column order.
-
-    ### 2. TRAINING CONFIGURATION:
-    - **DATA USAGE**: Use **100%** of the training data. Do NOT subset.
-    - **EPOCHS**: Train for **5 epochs**.
-    - **EARLY STOPPING**: Implement logic to stop training if validation loss doesn't improve for 3 epochs.
-    - **DEVICE**: Explicitly check `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` and move models/data to device.
-    - **AMP**: Use `torch.cuda.amp.GradScaler` (Mixed Precision) to speed up training and save VRAM.
-
-    ### 3. LIBRARY BEST PRACTICES:
-    - **Optimizers**: NEVER import `AdamW` from `transformers`. ALWAYS use `torch.optim.AdamW`.
-    - **DataLoaders**: Set `num_workers=4` and `pin_memory=True`. 
-        - **CRITICAL**: Wrap the main execution logic in `if __name__ == "__main__":` to prevent multiprocessing crashes.
-    - **Logging**: Print training progress EVERY 10 BATCHES (e.g., "Epoch 1, Batch 10/X, Loss: ...").
-    - **Inference**: 
-        - Multi-Class: `softmax(dim=1)`.
-        - Binary/Multi-Label: `sigmoid`.
-        - Regression: No activation.
-    - For **multi-class classification (len(classes) > 2)**:
-        - Final predictions MUST be produced using `softmax(dim=1)` so that **each row sums to 1**, matching Kaggle submission requirements.
-        - Ensure the output probabilities exactly follow the column order in `sample_submission.csv`.
-
-
-    ### 4. MANDATORY SUBMISSION LOGIC:
-    - You MUST generate a `submission.csv` file at the end.
-    - Load `sample_submission.csv` to ensure correct ID sorting.
-    - Save to current directory (`.`).
-    - Print "Submission saved to submission.csv".
-
-    OUTPUT:
-    - Return ONLY valid Python code. No markdown backticks.
+    INSTRUCTIONS:
+        INHERIT SETUP: Copy imports, class definitions, and setup exactly from the REFERENCE.
+        DATA LOAD: Load the ENTIRE dataset.
+        VALIDATION STRATEGY (CRITICAL):
+            You MUST split the data (e.g., 90% Train, 10% Validation). Do NOT train on 100% data without validation.
+            We need validation metrics to prevent overfitting.
+        TRAINING ROBUSTNESS:
+            Implement Early Stopping (patience=3) based on Validation Loss/Metric.
+            Implement Model Checkpointing: Save the best model during training, and load it back before predicting on Test.
+            If using Transformers/HF: set load_best_model_at_end=True, save_total_limit=1.
+            If using Keras/TF: use ModelCheckpoint(save_best_only=True).
+            If using PyTorch: save state_dict when val_score improves.
+        SUBMISSION:
+            Predict on test.csv using the BEST saved model.
+            Ensure ID column types match sample_submission.csv.
+            Save to submission.csv.
+            Return ONLY valid Python code.
     """
+
+async def generate_candidate_script(candidate_info, modality_info, metadata, dataset_dir, seed=42):
+    prompt = CANDIDATE_PROMPT.format(
+        model_name=candidate_info["model_name"],
+        library=candidate_info["library"],
+        implementation_tips=candidate_info.get("implementation_tips", ""),
+        dataset_dir=str(dataset_dir),
+        target_col=modality_info.get("target_col"),
+        task_type=modality_info.get("task_type"),
+        metadata_json=json.dumps(metadata),
+        seed=seed
+    )
 
     response = completion(
         model="gemini/gemini-2.5-flash",
@@ -155,20 +94,47 @@ def llm_script_generator(state: CodegenState):
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
+    
+    raw = response["choices"][0]["message"]["content"]
+    raw = raw.replace("```python", "").replace("```", "").strip()
+    return raw
 
-    raw_script = response["choices"][0]["message"]["content"]
+async def generate_final_script(best_candidate, prototype_code, modality_info, metadata, dataset_dir, seed=42):
+    prompt = FINAL_TRAIN_PROMPT.format(
+        model_name=best_candidate["model_name"],
+        prototype_code=prototype_code,
+        dataset_dir=str(dataset_dir),
+        target_col=modality_info.get("target_col"),
+        task_type=modality_info.get("task_type"),
+        metadata_json=json.dumps(metadata),
+        seed=seed
+    )
 
-    # Clean markdown
-    if raw_script.strip().startswith("```"):
-        raw_script = raw_script.replace("```python", "").replace("```", "").strip()
+    response = completion(
+        model="gemini/gemini-2.5-flash",
+        api_key=os.getenv("GEMINI_API_KEY"),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+    )
+    
+    raw = response["choices"][0]["message"]["content"]
+    return raw.replace("```python", "").replace("```", "").strip()
 
-    state["script"] = raw_script
-    return state
 
+# =========================================================
+#  🔥 INSERTED BELOW: OLD FIXER LOGIC (PERFECT COPY)
+# =========================================================
 
-# ---------------------------------------------------------
-# NODE: Script Fixer (Repairer)
-# ---------------------------------------------------------
+from langgraph.graph import StateGraph
+
+class FixState(dict):
+    script: str
+    error_log: str
+    fixed_script: str
+
+# -----------------------------
+# FIXER NODE
+# -----------------------------
 def llm_script_fixer(state: FixState):
     script = state["script"]
     error_log = state["error_log"]
@@ -184,45 +150,38 @@ def llm_script_fixer(state: FixState):
     BROKEN SCRIPT:
     ```python
     {script}
+    ```
     ERROR LOG:
     {error_log}
+
     ANALYSIS:
     Identify the line causing the error.
     - If error is "DataLoader worker exited" or "multiprocessing": Force `num_workers=0`.
     - If error is "CUDA out of memory" or device issue: Force `device='cpu'`.
-    - If error involves shape mismatch in Linear layers: Re-calculate the input features (flatten size) dynamically.
-    - If error involves "T5" or "Seq2Seq" shapes: Ensure padding and max_length are small (e.g., 64).
-    
-    Ensure `train_df.sample(frac=0.05)` logic is preserved.
-    
+    - If error involves shape mismatch in Linear layers: Re-calculate the input features dynamically.
+    - If error involves T5 or Seq2Seq tensor shapes: ensure padding & max_length small (e.g., 64).
+
+    Ensure train_df.sample() logic is preserved if present.
+
     OUTPUT:
-    Return ONLY valid Python code. No markdown backticks.
+    Return ONLY valid Python code. No markdown fences.
     """
+
     response = completion(
         model="gemini/gemini-2.5-flash",
         api_key=os.getenv("GEMINI_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
+
     fixed_script = response["choices"][0]["message"]["content"]
-    # Clean markdown
-    if fixed_script.strip().startswith(""):
-        fixed_script = fixed_script.replace("python", "").replace("```", "").strip()
+    fixed_script = fixed_script.replace("```python", "").replace("```", "").strip()
     state["fixed_script"] = fixed_script
     return state
 
-
-# ---------------------------------------------------------
-# Build LangGraph
-# ---------------------------------------------------------
-def build_gen_graph():
-    graph = StateGraph(CodegenState)
-    graph.add_node("code_generator", llm_script_generator)
-    graph.set_entry_point("code_generator")
-    graph.set_finish_point("code_generator")
-    return graph.compile()
-
-
+# -----------------------------
+# FIXER GRAPH
+# -----------------------------
 def build_fix_graph():
     graph = StateGraph(FixState)
     graph.add_node("code_fixer", llm_script_fixer)
@@ -230,51 +189,10 @@ def build_fix_graph():
     graph.set_finish_point("code_fixer")
     return graph.compile()
 
-
-# ---------------------------------------------------------
-# Public API
-# ---------------------------------------------------------
-async def generate_training_script_llm(
-    modality,
-    task_type,
-    target_col,
-    classes,
-    metadata,
-    dataset_dir,
-    output_path: Path,
-    seed: int = 42,
-    hardware=None,
-):
-
-    dataset_dir_str = str(dataset_dir.resolve())
-
-    graph = build_gen_graph()
-
-    final_state = await graph.ainvoke(
-        {
-            "modality": modality,
-            "task_type": task_type,
-            "target_col": target_col,
-            "classes": classes,
-            "metadata": metadata,
-            "dataset_dir": dataset_dir_str,
-            "seed": seed,
-            "hardware": hardware or {},   # <-- NEW
-        }
-    )
-
-
-    script = final_state["script"]
-    output_path.write_text(script)
-    return output_path
-
-
-# ---------------------------------------------------------
-# Public API: Fix
-# ---------------------------------------------------------
+# -----------------------------
+# PUBLIC FIXER API
+# -----------------------------
 async def fix_training_script_llm(current_script: str, error_log: str):
     graph = build_fix_graph()
-    final_state = await graph.ainvoke(
-        {"script": current_script, "error_log": error_log}
-    )
-    return final_state["fixed_script"]
+    final = await graph.ainvoke({"script": current_script, "error_log": error_log})
+    return final["fixed_script"]
