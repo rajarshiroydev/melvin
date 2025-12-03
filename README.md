@@ -67,7 +67,7 @@ My agent was not able to get any medal in the mentioned datasets. However it wen
 - spooky-author-identification: Median Threshold: 0.418785
 - spooky-author-identification: seed 42: 0.39147 > Median Threshold
 - spooky-author-identification: seed 43: 0.35498 > Median Threshold
-- spooky-author-identification: seed 42: 0.42204 > Median Threshold
+- spooky-author-identification: seed 44: 0.42204 > Median Threshold
 
 #### Siim Isic Melanoma Classification
 - siim-isic-melanoma-classification: Medal Threshold: 0.937
