@@ -32,6 +32,57 @@ class MLEAgent:
         self.maximize_metric = self.config.get("metric", {}).get("maximize", True)
 
         self.hardware = self.get_hardware_profile()
+        
+        # --- LOGGING SETUP ---
+        self.step_counter = 0
+        self.trace_file = self.output_dir / "reasoning_trace.md"
+        self._init_trace_log()
+
+    # ------------------------------------------------------------------
+    # HELPER: Reasoning Trace Logging
+    # ------------------------------------------------------------------
+    def _init_trace_log(self):
+        """Initializes the Markdown trace file."""
+        header = f"""# 🧠 Agent Reasoning Trace
+        **Competition:** {self.competition_id}
+        **Date:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        **Seed:** {self.seed}
+
+        ---
+        """
+        with open(self.trace_file, "w", encoding="utf-8") as f:
+            f.write(header)
+
+    def log_step(self, title, content, icon="🤖", code=None, output=None, tags=None):
+        """
+        Logs a reasoning step to the Markdown trace and JSONL.
+        """
+        self.step_counter += 1
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # 1. Write to JSONL (Machine Readable) - Keeps code/output for debugging
+        log_entry = {
+            "step": self.step_counter,
+            "timestamp": time.time(),
+            "icon": icon,
+            "title": title,
+            "content": content,
+            "code": code,
+            "output": output,
+            "tags": tags or []
+        }
+        self.log(log_entry)
+
+        # 2. Write to Markdown (Human Readable - TEXT ONLY)
+        md_entry = f"### Step {self.step_counter} {icon} **{title}** <span style='color:grey; font-size:0.8em'>({timestamp})</span>\n\n"
+        md_entry += f"{content}\n\n"
+        md_entry += "---\n"
+
+        with open(self.trace_file, "a", encoding="utf-8") as f:
+            f.write(md_entry)
+        
+        # Print to console for real-time feedback
+        print(f"\n[{self.step_counter}] {icon} {title}: {content[:100]}...")
 
     # ------------------------------------------------------------------
     # HELPER: Dependencies & Error Recovery
@@ -72,12 +123,14 @@ class MLEAgent:
         # Basic file logger
         log_path = self.output_dir / "agent_log.jsonl"
         with open(log_path, "a") as f:
-            data["timestamp"] = time.time()
+            if "timestamp" not in data:
+                data["timestamp"] = time.time()
             f.write(json.dumps(data) + "\n")
 
     def _handle_execution_error(self, error_msg):
         # 1. NumPy 2.x Fix
         if "NumPy 1.x cannot be run in NumPy 2" in error_msg or "Failed to initialize NumPy" in error_msg:
+            self.log_step("Environment Error", "NumPy version conflict detected. Action: Downgrade NumPy to 1.x.", "⚠️")
             print("[WARN] Environment Conflict: Downgrading NumPy...")
             self.log({"step": "error_recovery", "action": "downgrade_numpy"})
             try:
@@ -88,6 +141,7 @@ class MLEAgent:
 
         # 2. Scipy/Numpy Linkage Fix
         if "numpy.char" in error_msg or "module named 'numpy.char'" in error_msg:
+            self.log_step("Environment Error", "SciPy/NumPy mismatch detected. Action: Reinstall SciPy.", "⚠️")
             print("[WARN] SciPy/NumPy Mismatch Detected. Reinstalling SciPy...")
             self.log({"step": "error_recovery", "action": "reinstall_scipy"})
             try:
@@ -98,6 +152,7 @@ class MLEAgent:
 
         # 3. HuggingFace / Transformers Version Conflict (NEW FIX)
         if "huggingface-hub" in error_msg and "is required" in error_msg:
+            self.log_step("Environment Error", "HuggingFace version conflict detected. Action: Upgrade transformers stack.", "⚠️")
             print("[WARN] HuggingFace Version Conflict Detected. Upgrading stack...")
             self.log({"step": "error_recovery", "action": "upgrade_transformers"})
             try:
@@ -127,6 +182,7 @@ class MLEAgent:
             if "mlebench" in package: return False
 
             print(f"[WARN] Installing missing dependency: '{package}'...")
+            self.log_step("Dependency Install", f"Missing module '{missing_module}'. Installing '{package}'.", "📦")
             self.log({"step": "error_recovery", "missing": missing_module, "installing": package})
 
             try:
@@ -211,7 +267,10 @@ class MLEAgent:
     def prepare_data(self):
         if self.prepared_public.exists():
             print("[INFO] Data already prepared.")
+            self.log_step("Data Check", "Data already exists in cache. Skipping preparation.", "📂")
             return
+        
+        self.log_step("Data Preparation", "Preparing dataset via MLE-Bench standard preparer...", "🛠️")
         print("[INFO] Preparing dataset via MLE-Bench...")
         preparer_path = self.config["preparer"]
         prepare_fn = self.load_module_from_path(preparer_path)
@@ -224,22 +283,54 @@ class MLEAgent:
     # ------------------------------------------------------------------
     def run(self):
         self.prepare_data()
+        
+        # --- 1. ANALYSIS ---
         print("[1/5] Analyzing Task...")
         metadata = collect_dataset_metadata(self.prepared_public)
+        
+        # Log the description text
+        self.log_step("Task Analysis", 
+                      f"Reading dataset description and metadata.\n**Description Snippet:**\n_{metadata.get('description', '')[:200]}..._", 
+                      "📚")
+        
         modality_info = asyncio.run(detect_modality_llm(metadata))
         print(f"      Detected: {modality_info['modality']} | {modality_info['task_type']}")
+        
+        self.log_step("Modality Detection", 
+                      f"Identified task properties:\n- **Modality:** {modality_info['modality']}\n- **Task Type:** {modality_info['task_type']}\n- **Target:** {modality_info.get('target_col', 'N/A')}", 
+                      "🔍")
 
+        # --- 2. RETRIEVAL ---
         print("[2/5] Searching & Strategizing...")
+        self.log_step("Research & Retrieval", f"Searching for SOTA approaches for {modality_info['task_type']} on {modality_info['modality']} data...", "🌏")
+        
         retrieval_data = asyncio.run(retrieve_model_candidates(
             metadata, self.competition_id, modality_info['task_type'], modality_info['modality']
         ))
         
         # EXTRACT METRIC DIRECTION
-        metric_dir = retrieval_data.get("metric_direction", "maximize").lower()
+        task = modality_info["task_type"]
+
+        if task in ["classification", "image_classification", "audio_classification"]:
+            metric_dir = "maximize"
+        elif task in ["regression"]:
+            metric_dir = "minimize"
+        elif task in ["seq2seq"]:
+            metric_dir = "minimize"
+        else:
+            metric_dir = "maximize"
+
+        print(f"      Metric Goal: {metric_dir.upper()} (based on task type)")
+
         candidates = retrieval_data["candidates"]
         print(f"      Metric Goal: {metric_dir.upper()}")
         print(f"      Found {len(candidates)} candidates.")
 
+        self.log_step("Strategy Design", 
+                      f"Found {len(candidates)} potential strategies. Metric goal: **{metric_dir}**.", 
+                      "🧠")
+
+        # --- 3. TOURNAMENT ---
         print("[3/5] Candidate Tournament...")
         
         # FIX: Increase Timeout to 30 minutes (1800s)
@@ -256,16 +347,29 @@ class MLEAgent:
             best_score = -float('inf')
         
         for i, cand in enumerate(candidates):
-            print(f"      Evaluating Candidate {i+1}: {cand['model_name']}...")
+            cand_name = cand['model_name']
+            cand_reasoning = cand.get('reasoning', 'N/A')
+            
+            print(f"      Evaluating Candidate {i+1}: {cand_name}...")
+            
+            # Log the specific plan for this candidate
+            self.log_step(f"Design: Candidate {i+1}", 
+                          f"**Model:** {cand_name}\n**Reasoning:** {cand_reasoning}\n**Library:** {cand['library']}", 
+                          "📝")
+
             path = self.output_dir / f"candidate_{i}.py"
             code = asyncio.run(generate_candidate_script(
                 cand, modality_info, metadata, self.prepared_public, self.seed
             ))
             path.write_text(code)
             
+            self.log_step(f"Implementation: Candidate {i+1}", f"Generated training script for {cand_name}.", "💻", code=code)
+
             # PASS INCREASED TIMEOUT HERE
             score = self.execute_candidate_robust(path, timeout=CANDIDATE_TIMEOUT)
             print(f"      -> Score: {score}")
+            
+            self.log_step(f"Evaluation: Candidate {i+1}", f"Training finished. **Score:** {score}", "📊")
             
             # SELECTION LOGIC
             if score is not None:
@@ -288,6 +392,7 @@ class MLEAgent:
 
         if not best_candidate:
             print("[CRITICAL] All candidates failed. Falling back to Candidate 0.")
+            self.log_step("Critical Failure", "All candidates failed to return a score. Falling back to Candidate 0 default.", "❌")
             best_candidate = candidates[0]
             try:
                 best_code = self.output_dir.joinpath("candidate_0.py").read_text()
@@ -295,6 +400,7 @@ class MLEAgent:
                 best_code = asyncio.run(generate_candidate_script(best_candidate, modality_info, metadata, self.prepared_public, self.seed))
 
         print(f"[WINNER] {best_candidate['model_name']} (Score: {best_score})")
+        self.log_step("Tournament Winner", f"Selected strategy: **{best_candidate['model_name']}** with score {best_score}", "🏆")
 
         # ------------------------------------------------------------------
         # PHASE 2: REFINEMENT (MLE-STAR Implementation)
@@ -302,16 +408,19 @@ class MLEAgent:
         print("[3.5/5] Running Refinement Loop (MLE-STAR)...")
         from refiner import propose_ablations, propose_refinements, apply_refinement_llm
         
+        self.log_step("Refinement Analysis", "Analyzing the winning code for potential hyperparameter ablations...", "🔬")
         ablations = asyncio.run(propose_ablations(best_code, modality_info['task_type'], metric_dir))
         
         if ablations:
             target = ablations[0] 
             print(f"      Refining Target: {target['component_name']}...")
+            self.log_step("Refinement Proposal", f"Identified target: **{target['component_name']}**.\nReasoning: {target.get('reasoning', '')}", "💡")
             
             variations = asyncio.run(propose_refinements(target))
             
             for var in variations:
                 print(f"      Testing Variation: {var['variant_name']} ({var['instruction']})...")
+                self.log_step(f"Refinement: {var['variant_name']}", f"Applying instruction: {var['instruction']}", "🧪")
                 
                 refined_code = asyncio.run(apply_refinement_llm(best_code, var['instruction']))
                 
@@ -332,16 +441,21 @@ class MLEAgent:
                             
                         if better:
                             print(f"      [IMPROVEMENT] New Best Score: {score}")
+                            self.log_step("Refinement Success", f"Refinement improved score to {score}.", "✅")
                             best_score = score
                             best_code = refined_code 
                             best_candidate["model_name"] += f" ({var['variant_name']})"
+                        else:
+                            self.log_step("Refinement Result", f"Refinement did not improve score ({score}).", "📉")
         else:
             print("      [INFO] No obvious refinements found. Proceeding.")
+            self.log_step("Refinement", "No high-confidence refinements found.", "⏩")
 
         # ------------------------------------------------------------------
         # PHASE 3: FINAL TRAIN
         # ------------------------------------------------------------------
         print("[4/5] Training Final Model on Full Data...")
+        self.log_step("Final Production Build", "Generating final training script for full dataset training.", "🏭")
         final_path = self.output_dir / "train.py"
         
         if best_code is None: best_code = ""
@@ -351,18 +465,23 @@ class MLEAgent:
         ))
         final_path.write_text(final_code)
         
+        self.log_step("Final Execution", "Running final training script...", "🚀", code=final_code)
+        
         if self.run_training_script_robust(final_path, timeout=86400):
             print("[5/5] Grading...")
-            self.grade_submission()
+            self.log_step("Grading", "Validating submission file against test set...", "🎓")
+            score = self.grade_submission()
+            self.log_step("Completion", f"Final Score: **{score}**", "🏁")
         else:
             print("[FAIL] Final training failed.")
+            self.log_step("Failure", "Final training failed to produce a valid submission.", "💀")
 
     # ------------------------------------------------------------------
     # EXECUTION HELPERS (ROBUST & STREAMING)
     # ------------------------------------------------------------------
     def execute_candidate_robust(self, script_path, timeout=600):
-        # Allow up to 5 repair attempts per candidate
-        max_retries = 5
+        # Allow up to 10 repair attempts per candidate
+        max_retries = 10
 
         for attempt in range(max_retries):
             start_time = time.time()
@@ -389,6 +508,7 @@ class MLEAgent:
                     if time.time() - start_time > timeout:
                         proc.kill()
                         print("      [WARN] Timeout reached!")
+                        self.log_step("Execution Warning", "Timeout reached during candidate execution.", "⏱️")
                         return None 
 
                 full_log = "".join(captured_lines)
@@ -403,10 +523,12 @@ class MLEAgent:
 
                 # 3. Failure Handling
                 print(f"      [WARN] Crash detected (Attempt {attempt+1}/{max_retries}). Analyzing...")
+                self.log_step(f"Crash Detected (Attempt {attempt+1})", "Script crashed. Analyzing logs...", "💥", output=full_log[-1000:])
 
                 # A. Dependency Fix?
                 if self._handle_execution_error(full_log):
                     print(f"      [INFO] Environment fixed. Retrying...")
+                    self.log_step("Recovery", "Environment dependency fixed. Retrying...", "🔄")
                     continue
                 
                 # B. AI Code Fix? (Enable this!)
@@ -416,6 +538,7 @@ class MLEAgent:
                     # Call the fixer we imported
                     fixed_code = asyncio.run(fix_training_script_llm(current_code, full_log))
                     script_path.write_text(fixed_code)
+                    self.log_step("AI Repair", "Applied LLM-based code fix to resolve crash.", "🚑", code=fixed_code)
                     continue # Retry with new code
                 except Exception as e:
                     print(f"      [ERR] AI Fixer failed: {e}")
@@ -426,6 +549,7 @@ class MLEAgent:
                 return None
         
         print("      [ERR] Candidate failed after max retries.")
+        self.log_step("Failure", "Candidate failed after maximum retries.", "❌")
         return None
 
     def run_training_script_robust(self, script_path, timeout=3600):
@@ -463,12 +587,14 @@ class MLEAgent:
                     # 1. Success Check
                     if proc.returncode == 0:
                         if self._validate_submission(self.output_dir / "submission.csv"):
+                            self.log_step("Final Validation", "submission.csv generated and validated successfully.", "✅")
                             return True
                         else:
                             raise RuntimeError("CSV Validation Failed")
                     
                     # 2. Failure Handling
                     err_msg = "".join(full_log)
+                    self.log_step(f"Final Train Crash (Attempt {attempt})", "Final training script crashed.", "💥", output=err_msg[-500:])
                     
                     # A. Dependency Fix?
                     if self._handle_execution_error(err_msg):
@@ -479,6 +605,7 @@ class MLEAgent:
                     print(f"[WARN] Attempt {attempt} failed. Retrying with AI Fix...")
                     new_code = asyncio.run(fix_training_script_llm(script_path.read_text(), err_msg))
                     script_path.write_text(new_code)
+                    self.log_step("Final Repair", "Applying AI repair to final script.", "🚑")
                     
                 except Exception as e:
                     print(f"[ERR] Attempt {attempt} error: {e}")
@@ -534,8 +661,50 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--competition", required=True)
     parser.add_argument("-o", "--output", default="runs")
-    parser.add_argument("--seed", type=int, default=42)
+
+    # This now means NUMBER OF SEEDS, not a single seed value.
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="Number of seeds to run. Example: --seed 3 runs seeds 42, 43, 44."
+    )
     args = parser.parse_args()
 
-    agent = MLEAgent(args.competition, args.output, args.seed)
-    agent.run()
+    # Build seed list 42, 43, 44, ...
+    base_seed = 43
+    seeds_to_run = [base_seed + i for i in range(args.seed)]
+    print(f"[INFO] Running seeds: {seeds_to_run}")
+
+    # Track all run directories for appending to JSONL
+    all_run_dirs = []
+
+    for s in seeds_to_run:
+        print(f"\n==============================")
+        print(f"🚀 Running agent with seed {s}")
+        print(f"==============================\n")
+
+        agent = MLEAgent(args.competition, args.output, s)
+        agent.run()
+
+        # Find latest run directory created by this seed
+        run_dirs = sorted(Path(args.output).glob("*"), key=lambda p: p.stat().st_mtime)
+        latest_run = run_dirs[-1]
+        all_run_dirs.append(latest_run)
+
+    # ------------------------------------------------------------
+    # Append all submissions from all seeds into ONE JSONL file
+    # ------------------------------------------------------------
+    jsonl_path = Path(args.output) / "submissions.jsonl"
+    print(f"[INFO] Appending submission entries to: {jsonl_path}")
+
+    with open(jsonl_path, "a") as f:
+        for run_dir in all_run_dirs:
+            submission_path = run_dir / "submission.csv"
+            record = {
+                "competition_id": args.competition,
+                "submission_path": str(submission_path)
+            }
+            f.write(json.dumps(record) + "\n")
+
+    print(f"[INFO] Done. Appended {len(all_run_dirs)} submissions.")
