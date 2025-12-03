@@ -73,6 +73,7 @@ My agent was not able to get any medal in the mentioned datasets. However it wen
 - siim-isic-melanoma-classification: Medal Threshold: 0.937
 - siim-isic-melanoma-classification: Median Threshold: 0.9128
 - siim-isic-melanoma-classification: seed 42: 0.90313 < Median Threshold (didn't cross threshold)
+- siim-isic-melanoma-classification: seed 43: 0.86172 < Median Threshold (didn't cross threshold)
 
 #### Tabular Playground Series May 2022 (higher score is better)
 - tabular-playground-series-may-2022: Medal Threshold: 0.99818
