@@ -47,6 +47,6 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 3. How it would self-improve next?
 
 ### System Architecture
-[System Architecure](melvin/architecture.png "System Architecture")
+[System Architecure](architecture.png "System Architecture")
 
 ### Evaluation
