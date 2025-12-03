@@ -50,3 +50,22 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 ![System Architecure](architecture.png "System Architecture")
 
 ### Evaluation
+My agent was not able to get any medal in the mentioned datasets. However it went really close in some of them. I will attach the scores here. Agents runs are still going on so if there is any medal or score improvements, I will update the scores.
+
+#### Spooky Author Identification
+- spooky-author-identification: Medal Threshold: 0.29381
+- spooky-author-identification: Median Threshold: 0.418785
+- spooky-author-identification: seed 42: 0.39147 > Median Threshold
+- spooky-author-identification: seed 43: 0.35498 > Median Threshold
+- spooky-author-identification: seed 42: 0.42204 > Median Threshold
+
+#### Siim Isic Melanoma Classification
+- siim-isic-melanoma-classification: Medal Threshold: 0.937
+- siim-isic-melanoma-classification: Median Threshold: 0.9128
+- siim-isic-melanoma-classification: seed 42: 0.90313 < Median Threshold
+
+#### Tabular Playground Series May 2022
+- tabular-playground-series-may-2022: Medal Threshold: 0.99818
+- tabular-playground-series-may-2022: Median Threshold: 0.972675
+- tabular-playground-series-may-2022: seed 42: 0.854012 < Median Threshold
+

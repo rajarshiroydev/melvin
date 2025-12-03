@@ -22,8 +22,8 @@ Your goal: Write a Python Training Script to EVALUATE this specific strategy.
 
 CRITICAL CONSTRAINTS (SPEED IS #1):
 1. **SUBSAMPLING IS MANDATORY**: 
-   - You MUST load ONLY the first 20,000 rows or sample 20% of data (whichever is smaller).
-   - `df = pd.read_csv(..., nrows=20000)` or `df = df.sample(n=20000)`.
+   - You MUST load ONLY the first 5000 rows or sample 5% of data (whichever is smaller).
+   - `df = pd.read_csv(..., nrows=5000)` or `df = df.sample(n=5000)`.
    - DO NOT train on the full dataset. This is a quick viability test.
 2. **VALIDATION**:
    - Use a simple 80/20 Holdout split, UNLESS using a library that handles validation internally. In that case, follow the library's best practices.
