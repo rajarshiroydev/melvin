@@ -403,9 +403,9 @@ class MLEAgent:
         self.log_step("Tournament Winner", f"Selected strategy: **{best_candidate['model_name']}** with score {best_score}", "🏆")
 
         # ------------------------------------------------------------------
-        # PHASE 2: REFINEMENT (MLE-STAR Implementation)
+        # PHASE 2: REFINEMENT
         # ------------------------------------------------------------------
-        print("[3.5/5] Running Refinement Loop (MLE-STAR)...")
+        print("[3.5/5] Running Refinement Loop...")
         from refiner import propose_ablations, propose_refinements, apply_refinement_llm
         
         self.log_step("Refinement Analysis", "Analyzing the winning code for potential hyperparameter ablations...", "🔬")
