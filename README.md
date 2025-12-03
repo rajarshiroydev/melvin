@@ -62,20 +62,20 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 ### Evaluation
 My agent was not able to get any medal in the mentioned datasets. However it went really close in some of them. I will attach the scores here. Agents runs are still going on so if there is any medal or score improvements, I will update the scores.
 
-#### Spooky Author Identification
+#### Spooky Author Identification (lower score is better)
 - spooky-author-identification: Medal Threshold: 0.29381
 - spooky-author-identification: Median Threshold: 0.418785
-- spooky-author-identification: seed 42: 0.39147 > Median Threshold
-- spooky-author-identification: seed 43: 0.35498 > Median Threshold
-- spooky-author-identification: seed 44: 0.42204 > Median Threshold
+- spooky-author-identification: seed 42: 0.39147 < Median Threshold (crossed threshold)
+- spooky-author-identification: seed 43: 0.35498 < Median Threshold (crossed threshold)
+- spooky-author-identification: seed 44: 0.42204 > Median Threshold (didn't cross threshold)
 
-#### Siim Isic Melanoma Classification
+#### Siim Isic Melanoma Classification (higher score is better)
 - siim-isic-melanoma-classification: Medal Threshold: 0.937
 - siim-isic-melanoma-classification: Median Threshold: 0.9128
-- siim-isic-melanoma-classification: seed 42: 0.90313 < Median Threshold
+- siim-isic-melanoma-classification: seed 42: 0.90313 < Median Threshold (didn't cross threshold)
 
-#### Tabular Playground Series May 2022
+#### Tabular Playground Series May 2022 (higher score is better)
 - tabular-playground-series-may-2022: Medal Threshold: 0.99818
 - tabular-playground-series-may-2022: Median Threshold: 0.972675
-- tabular-playground-series-may-2022: seed 42: 0.854012 < Median Threshold
+- tabular-playground-series-may-2022: seed 42: 0.854012 < Median Threshold (didn't cross threshold)
 
