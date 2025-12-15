@@ -3,46 +3,49 @@ import json
 from pathlib import Path
 from litellm import completion
 
+# env variable
+os.environ['GROQ_API_KEY']
+
 # ---------------------------------------------------------
 # PROMPT: Candidate Generator (Strict Subsampling)
 # ---------------------------------------------------------
 CANDIDATE_PROMPT = """
-You are an ML Engineer implementing a specific strategy found via research.
+    You are an ML Engineer implementing a specific strategy found via research.
 
-STRATEGY: {model_name}
-LIBRARY: {library}
-TIPS: {implementation_tips}
+    STRATEGY: {model_name}
+    LIBRARY: {library}
+    TIPS: {implementation_tips}
 
-DATASET: {dataset_dir}
-TARGET: {target_col}
-TASK: {task_type}
-METADATA: {metadata_json}
+    DATASET: {dataset_dir}
+    TARGET: {target_col}
+    TASK: {task_type}
+    METADATA: {metadata_json}
 
-Your goal: Write a Python Training Script to EVALUATE this specific strategy.
+    Your goal: Write a Python Training Script to EVALUATE this specific strategy.
 
-CRITICAL CONSTRAINTS (SPEED IS #1):
-1. **SUBSAMPLING IS MANDATORY**: 
-   - You MUST load ONLY the first 5000 rows or sample 5% of data (whichever is smaller).
-   - `df = pd.read_csv(..., nrows=5000)` or `df = df.sample(n=5000)`.
-   - DO NOT train on the full dataset. This is a quick viability test.
-2. **VALIDATION**:
-   - Use a simple 80/20 Holdout split, UNLESS using a library that handles validation internally. In that case, follow the library's best practices.
-   - Calculate the metric on the 20% holdout.
-3. **Efficiency**: Implement Early Stopping (patience=3) monitoring validation loss/metric. This allows you to set high max_epochs (e.g. 10 or 20) without wasting time.
-4. **OUTPUT FORMAT**:
-   - The script MUST print the final score on the LAST LINE exactly like this:
-     `FINAL_SCORE: 0.1234`
-   - Do NOT generate a submission.csv yet. We are just testing the model.
+    CRITICAL CONSTRAINTS (SPEED IS #1):
+    1. **SUBSAMPLING IS MANDATORY**: 
+    - You MUST load ONLY the first 5000 rows or sample 5% of data (whichever is smaller).
+    - `df = pd.read_csv(..., nrows=5000)` or `df = df.sample(n=5000)`.
+    - DO NOT train on the full dataset. This is a quick viability test.
+    2. **VALIDATION**:
+    - Use a simple 80/20 Holdout split, UNLESS using a library that handles validation internally. In that case, follow the library's best practices.
+    - Calculate the metric on the 20% holdout.
+    3. **Efficiency**: Implement Early Stopping (patience=3) monitoring validation loss/metric. This allows you to set high max_epochs (e.g. 10 or 20) without wasting time.
+    4. **OUTPUT FORMAT**:
+    - The script MUST print the final score on the LAST LINE exactly like this:
+        `FINAL_SCORE: 0.1234`
+    - Do NOT generate a submission.csv yet. We are just testing the model.
 
-BOILERPLATE:
-- Set random seeds ({seed}).
-- Handle missing values (SimpleImputer) and Categoricals (LabelEncoder) robustly.
-- **IMPORTS**: Just import the libraries you need (e.g. `import catboost`). 
-  - **DO NOT** try to install them with `subprocess` or `pip`. 
-  - If a library is missing, the environment will handle it automatically.
+    BOILERPLATE:
+    - Set random seeds ({seed}).
+    - Handle missing values (SimpleImputer) and Categoricals (LabelEncoder) robustly.
+    - **IMPORTS**: Just import the libraries you need (e.g. `import catboost`). 
+    - **DO NOT** try to install them with `subprocess` or `pip`. 
+    - If a library is missing, the environment will handle it automatically.
 
-Return ONLY valid Python code.
-"""
+    Return ONLY valid Python code.
+    """
 
 # ---------------------------------------------------------
 # PROMPT: Final Full-Scale Trainer
@@ -89,8 +92,8 @@ async def generate_candidate_script(candidate_info, modality_info, metadata, dat
     )
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
-        api_key=os.getenv("GEMINI_API_KEY"),
+        model="deepseek/deepseek-chat",
+        # api_key=os.getenv("GROQ_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
@@ -111,8 +114,8 @@ async def generate_final_script(best_candidate, prototype_code, modality_info, m
     )
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
-        api_key=os.getenv("GEMINI_API_KEY"),
+        model="deepseek/deepseek-chat",
+        # api_key=os.getenv("GROQ_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
@@ -168,8 +171,8 @@ def llm_script_fixer(state: FixState):
     """
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
-        api_key=os.getenv("GEMINI_API_KEY"),
+        model="deepseek/deepseek-chat",
+        # api_key=os.getenv("GROQ_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
