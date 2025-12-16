@@ -33,11 +33,12 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 
 10. In the `mle-bench` directory, download any dataset from the MLEbench datasets list using `mlebench prepare -c <competition-id>`. competition-id is simply the competition name.
 
-12. Once you have downloaded your desired dataset, go to the melvin terminal and use the command `python agents/orchestrator.py -c <competition-id>`. This will initiate the agent to perform its ML Engineering tasks.
+12. Once you have downloaded your desired dataset, go to the melvin terminal and use the command `python agents/orchestrator.py -c <competition-id> --seed n`. This will initiate the agent to perform its ML Engineering tasks. _n_ will decide the number of seed runs.
+
 
 
 ### Deliverables
-1. ✅ The agent runs end-to-end with a single command. While in the melvin directory use `python agents/orchestratory.py -c <competition-id> --seed n` to initiate the agent. The agent will find the dataset, generate training script, generate a submission.csv and get a score against it. _n_ will decide the number of seeds runs.
+1. ✅ The agent runs end-to-end with a single command. While in the melvin directory use `python agents/orchestratory.py -c <competition-id> --seed n` to initiate the agent. The agent will find the dataset, generate training script, generate a submission.csv and get a score against it. _n_ will decide the number of seed runs.
 
 2. ✅ In order to generate the script, the agent doesn't rely on LLM hope shot. Here is how it generates a high quality training script:
     - A research agent searches the web for the top solutions of the given problem statement, finds the libraries and dependencies that the solution requires and then based on this info, generates three candidate training scripts.
@@ -46,7 +47,7 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
     - Based on whether an even better script was generated or not, the final script that performed the best on the subset data is chosen for training on the full dataset.
     - Finally a submission.csv is generated after the full training and inferencing on the test dataset.
 
-3. In order to make the agent self-improve even more, I would implement the following:
+3. ✅ In order to make the agent self-improve even more, I would implement the following:
     - Experience Replay Memory
         - The agent should persist winning strategies (model families, hyperparameters, preprocessing) per modality/task. Future runs would retrieve these “successful precedents” and bias the LLM generator toward proven architectures, reducing variance and improving reliability.
 

@@ -15,7 +15,8 @@ except ImportError:
     HAS_PIL = False
 
 load_dotenv()
-
+# env variable
+os.environ['GROQ_API_KEY']
 
 # ---------------------------------------------------------
 # Helper: Text & File Readers
@@ -253,8 +254,8 @@ def llm_modality_detector(state: ModalityState):
     """
 
     response = completion(
-        model="gemini/gemini-2.5-flash",
-        api_key=os.getenv("GEMINI_API_KEY"),
+        model="deepseek/deepseek-chat",
+        # api_key=os.getenv("GROQ_API_KEY"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )

@@ -12,3 +12,4 @@ wheels/
 .pytest_cache
 
 runs
+langgraph_agents/

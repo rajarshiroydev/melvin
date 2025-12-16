@@ -1,21 +1,21 @@
+import re
 import sys
 import yaml
-import importlib
-import subprocess
-import argparse
+import time
 import json
 import asyncio
-import time
+import argparse
+import importlib
+import subprocess
 import pandas as pd
-import re
-from datetime import datetime
-from pathlib import Path
 
-# Ensure these files exist in the same directory
-from code_generator import generate_candidate_script, generate_final_script, fix_training_script_llm
-from modality_detector import collect_dataset_metadata, detect_modality_llm
+
+from pathlib import Path
+from datetime import datetime
 from retriever import retrieve_model_candidates
+from modality_detector import collect_dataset_metadata, detect_modality_llm
 from refiner import propose_ablations, propose_refinements, apply_refinement_llm
+from code_generator import generate_candidate_script, generate_final_script, fix_training_script_llm
 
 class MLEAgent:
     def __init__(self, competition_id, runs_base_dir, seed=42):
@@ -128,10 +128,9 @@ class MLEAgent:
             f.write(json.dumps(data) + "\n")
 
     def _handle_execution_error(self, error_msg):
-        # 1. NumPy 2.x Fix
+        # 1. NumPy/SciPy Version Conflict Fixes (These are structural environment corruptions)
         if "NumPy 1.x cannot be run in NumPy 2" in error_msg or "Failed to initialize NumPy" in error_msg:
-            self.log_step("Environment Error", "NumPy version conflict detected. Action: Downgrade NumPy to 1.x.", "⚠️")
-            print("[WARN] Environment Conflict: Downgrading NumPy...")
+            self.log_step("Environment Error", "NumPy version conflict detected. Action: Downgrade NumPy.", "⚠️")
             self.log({"step": "error_recovery", "action": "downgrade_numpy"})
             try:
                 subprocess.run(["uv", "pip", "install", "numpy<2"], check=True)
@@ -139,61 +138,84 @@ class MLEAgent:
             except subprocess.CalledProcessError:
                 return False
 
-        # 2. Scipy/Numpy Linkage Fix
-        if "numpy.char" in error_msg or "module named 'numpy.char'" in error_msg:
+        if "numpy.char" in error_msg:
             self.log_step("Environment Error", "SciPy/NumPy mismatch detected. Action: Reinstall SciPy.", "⚠️")
-            print("[WARN] SciPy/NumPy Mismatch Detected. Reinstalling SciPy...")
-            self.log({"step": "error_recovery", "action": "reinstall_scipy"})
             try:
                 subprocess.run(["uv", "pip", "install", "--force-reinstall", "scipy"], check=True)
                 return True
             except subprocess.CalledProcessError:
                 return False
 
-        # 3. HuggingFace / Transformers Version Conflict (NEW FIX)
-        if "huggingface-hub" in error_msg and "is required" in error_msg:
-            self.log_step("Environment Error", "HuggingFace version conflict detected. Action: Upgrade transformers stack.", "⚠️")
-            print("[WARN] HuggingFace Version Conflict Detected. Upgrading stack...")
-            self.log({"step": "error_recovery", "action": "upgrade_transformers"})
-            try:
-                # Upgrade key NLP libraries together to ensure compatibility
-                subprocess.run(["uv", "pip", "install", "-U", "transformers", "huggingface-hub", "tokenizers", "accelerate"], check=True)
-                importlib.invalidate_caches()
-                return True
-            except subprocess.CalledProcessError:
-                return False
+        # ------------------------------------------------------------------
+        # DYNAMIC DEPENDENCY PARSING
+        # ------------------------------------------------------------------
+        # We look for patterns where the error message explicitly tells us what is missing.
+        # This handles "requires accelerate>=0.26", "pip install transformers", "No module named 'cv2'", etc.
+        
+        missing_packages = set()
 
-        # 4. Install Missing Module
-        missing_module = None
-        match_std = re.search(r"No module named '(.+?)'", error_msg)
-        if match_std:
-            missing_module = match_std.group(1)
+        # Pattern 1: Explicit suggestion to run pip install
+        # Matches: "run `pip install accelerate`", "Please install `transformers[torch]`"
+        pip_matches = re.findall(r"pip install\s+([a-zA-Z0-9_\-\[\]]+)", error_msg)
+        for m in pip_matches:
+            # Clean flags like -U or --upgrade if they were caught
+            clean_pkg = m.split()[0]
+            missing_packages.add(clean_pkg)
 
-        if missing_module and "numpy" in missing_module:
+        # Pattern 2: Version requirements
+        # Matches: "requires accelerate>=0.26.0", "requires protobuf<4.0"
+        req_matches = re.findall(r"requires\s+([a-zA-Z0-9_\-]+)(?:[><=]=?[\d\.]+)", error_msg)
+        missing_packages.update(req_matches)
+
+        # Pattern 3: Standard ModuleNotFoundError
+        # Matches: "No module named 'cv2'", "No module named 'blobs'"
+        mod_matches = re.findall(r"No module named '([a-zA-Z0-9_\-]+)'", error_msg)
+        missing_packages.update(mod_matches)
+        
+        # Pattern 4: Generic "requires the X library"
+        # Matches: "requires the beautifulsoup4 library"
+        lib_matches = re.findall(r"requires the ([a-zA-Z0-9_\-]+) library", error_msg)
+        missing_packages.update(lib_matches)
+
+        # Filter out common false positives (like 'numpy' which we handle separately, or local files)
+        missing_packages = {pkg for pkg in missing_packages if "numpy" not in pkg and "mlebench" not in pkg}
+
+        if not missing_packages:
             return False
 
-        if not missing_module:
-            match_req = re.search(r"requires the ([a-zA-Z0-9]+) library", error_msg)
-            if match_req:
-                missing_module = match_req.group(1)
+        # ------------------------------------------------------------------
+        # EXECUTE RECOVERY
+        # ------------------------------------------------------------------
+        # Pick the most specific package. Usually, if 'pip install' is suggested, that's the authority.
+        # Otherwise, rely on the mapping or the raw name.
+        
+        for pkg_raw in missing_packages:
+            # 1. Clean version constraints if captured (e.g., "accelerate>=0.26" -> "accelerate")
+            pkg_name = re.split(r"[><=]", pkg_raw)[0]
+            
+            # 2. Map to PyPI name if it's a known alias (cv2 -> opencv-python)
+            # You can keep adding to package_mapping, but if it's not there, we try the raw name.
+            pkg_to_install = self.package_mapping.get(pkg_name, pkg_name)
 
-        if missing_module:
-            package = self.package_mapping.get(missing_module, missing_module)
-            if "mlebench" in package: return False
-
-            print(f"[WARN] Installing missing dependency: '{package}'...")
-            self.log_step("Dependency Install", f"Missing module '{missing_module}'. Installing '{package}'.", "📦")
-            self.log({"step": "error_recovery", "missing": missing_module, "installing": package})
+            print(f"[WARN] Dynamic Dependency Detection: Found '{pkg_raw}'. Installing '{pkg_to_install}'...")
+            self.log_step("Dependency Install", f"Error log indicated missing '{pkg_raw}'. Installing '{pkg_to_install}'.", "📦")
+            self.log({"step": "error_recovery", "missing": pkg_raw, "installing": pkg_to_install})
 
             try:
-                subprocess.run(["uv", "pip", "install", package], check=True)
+                # We install exactly what was requested (including [torch] extras if present)
+                subprocess.run(["uv", "pip", "install", pkg_to_install], check=True)
+                
+                # Special Handling: If we installed 'accelerate', we often need to update transformers too
+                if "accelerate" in pkg_to_install:
+                     subprocess.run(["uv", "pip", "install", "-U", "transformers"], check=False)
+                
                 importlib.invalidate_caches()
-                return True
+                return True # Return True immediately after one successful fix to retry execution
             except subprocess.CalledProcessError:
-                return False
+                print(f"[ERR] Failed to install {pkg_to_install}")
+                continue
 
         return False
-
     # ------------------------------------------------------------------
     # HELPER: Setup & Config
     # ------------------------------------------------------------------
@@ -308,22 +330,28 @@ class MLEAgent:
             metadata, self.competition_id, modality_info['task_type'], modality_info['modality']
         ))
         
-        # EXTRACT METRIC DIRECTION
-        task = modality_info["task_type"]
-
-        if task in ["classification", "image_classification", "audio_classification"]:
-            metric_dir = "maximize"
-        elif task in ["regression"]:
-            metric_dir = "minimize"
-        elif task in ["seq2seq"]:
-            metric_dir = "minimize"
+        # ------------------------------------------------------------------
+        # FIX: TRUST THE RETRIEVED METRIC DIRECTION
+        # ------------------------------------------------------------------
+        # Previous logic blindly assumed classification = maximize. 
+        # But Spooky Author (LogLoss) requires minimization.
+        # We now prioritize the Researcher's findings.
+        
+        extracted_direction = retrieval_data.get("metric_direction", "").lower().strip()
+        
+        if extracted_direction in ["minimize", "maximize"]:
+            metric_dir = extracted_direction
+            print(f"      Metric Goal: {metric_dir.upper()} (determined via Research/Web Search)")
         else:
-            metric_dir = "maximize"
-
-        print(f"      Metric Goal: {metric_dir.upper()} (based on task type)")
+            # Fallback defaults if Research failed to identify metric
+            task = modality_info["task_type"]
+            if task in ["regression", "seq2seq"]:
+                metric_dir = "minimize"
+            else:
+                metric_dir = "maximize"
+            print(f"      Metric Goal: {metric_dir.upper()} (fallback default)")
 
         candidates = retrieval_data["candidates"]
-        print(f"      Metric Goal: {metric_dir.upper()}")
         print(f"      Found {len(candidates)} candidates.")
 
         self.log_step("Strategy Design", 
@@ -406,7 +434,6 @@ class MLEAgent:
         # PHASE 2: REFINEMENT
         # ------------------------------------------------------------------
         print("[3.5/5] Running Refinement Loop...")
-        from refiner import propose_ablations, propose_refinements, apply_refinement_llm
         
         self.log_step("Refinement Analysis", "Analyzing the winning code for potential hyperparameter ablations...", "🔬")
         ablations = asyncio.run(propose_ablations(best_code, modality_info['task_type'], metric_dir))
@@ -672,7 +699,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Build seed list 42, 43, 44, ...
-    base_seed = 43
+    base_seed = 42
     seeds_to_run = [base_seed + i for i in range(args.seed)]
     print(f"[INFO] Running seeds: {seeds_to_run}")
 
