@@ -62,3 +62,5 @@ NOTE: Sometimes the IDE doesn't pick up the correct interpreter path so do `whic
 
 ### Evaluations
 ![Melvin Evaluations](melvin_evaluations.png "Melvin Evaluations")
+
+NOTE: The paths of submission.csv is different in the image compared to the agent_run folder because those runs contain checkpointed models as well. Hence a separate folder was created where only the submission.csv, train.py and some other files were uploaded to github. To confirm, check submissions.jsonl and the grading_report.json files which have the same path as the image and was created using the `mlebench grade --submission.jsonl --output` command.
