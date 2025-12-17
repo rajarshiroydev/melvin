@@ -80,6 +80,8 @@ async def retrieve_model_candidates(metadata, competition_id, task_type, modalit
     2. **Candidates**: Propose 3 distinct, high-performance approaches found in the text.
     
     CRITICAL:
+    - **PREFER PYTORCH**: It significantly more stable than TensorFlow/Keras.
+    - **AVOID TENSORFLOW**: Do not suggest Keras/TensorFlow unless it is the *only* way to solve the problem (e.g. TFLite constraints).
     - In "implementation_tips", do NOT write generic advice like "use cross validation".
     - Write SPECIFIC findings, e.g., "Use GroupKFold on 'user_id', clip targets to (0,20), use lag features."
     
