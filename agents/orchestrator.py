@@ -1,6 +1,11 @@
 import re
+import re
 import sys
 import yaml
+import time
+import json
+import asyncio
+import argparse
 import time
 import json
 import asyncio
@@ -8,13 +13,15 @@ import argparse
 import importlib
 import subprocess
 import pandas as pd
-
+import torch
 
 from pathlib import Path
 from datetime import datetime
 from retriever import retrieve_model_candidates
+from retriever import retrieve_model_candidates
 from modality_detector import collect_dataset_metadata, detect_modality_llm
 from refiner import propose_ablations, propose_refinements, apply_refinement_llm
+from code_generator import generate_candidate_script, generate_final_script, fix_training_script_llm
 from code_generator import generate_candidate_script, generate_final_script, fix_training_script_llm
 
 class MLEAgent:
@@ -31,12 +38,35 @@ class MLEAgent:
         self.repo_root, self.config = self._load_mlebench_config()
         self.maximize_metric = self.config.get("metric", {}).get("maximize", True)
 
+        # --- HARDWARE DETECTION ---
         self.hardware = self.get_hardware_profile()
+        print(f"[INFO] Hardware Detected: {self.hardware}")
         
         # --- LOGGING SETUP ---
         self.step_counter = 0
         self.trace_file = self.output_dir / "reasoning_trace.md"
         self._init_trace_log()
+
+    def get_hardware_profile(self):
+        """Detects GPU VRAM to optimize batch sizes."""
+        profile = {
+            "vram_gb": 0.0,
+            "gpu_count": 0,
+            "gpu_name": "CPU",
+            "device": "cpu"
+        }
+        try:
+            if torch.cuda.is_available():
+                # Get VRAM in GB
+                vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                profile["vram_gb"] = round(vram, 2)
+                profile["gpu_count"] = torch.cuda.device_count()
+                profile["gpu_name"] = torch.cuda.get_device_name(0)
+                profile["device"] = "cuda"
+        except Exception as e:
+            print(f"[WARN] Hardware detection failed: {e}")
+        
+        return profile
 
     # ------------------------------------------------------------------
     # HELPER: Reasoning Trace Logging
@@ -47,6 +77,7 @@ class MLEAgent:
         **Competition:** {self.competition_id}
         **Date:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         **Seed:** {self.seed}
+        **Hardware:** {self.hardware}
 
         ---
         """
@@ -60,7 +91,7 @@ class MLEAgent:
         self.step_counter += 1
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # 1. Write to JSONL (Machine Readable) - Keeps code/output for debugging
+        # 1. Write to JSONL (Machine Readable)
         log_entry = {
             "step": self.step_counter,
             "timestamp": time.time(),
@@ -73,7 +104,7 @@ class MLEAgent:
         }
         self.log(log_entry)
 
-        # 2. Write to Markdown (Human Readable - TEXT ONLY)
+        # 2. Write to Markdown (Human Readable)
         md_entry = f"### Step {self.step_counter} {icon} **{title}** <span style='color:grey; font-size:0.8em'>({timestamp})</span>\n\n"
         md_entry += f"{content}\n\n"
         md_entry += "---\n"
@@ -128,8 +159,9 @@ class MLEAgent:
             f.write(json.dumps(data) + "\n")
 
     def _handle_execution_error(self, error_msg):
-        # 1. NumPy/SciPy Version Conflict Fixes (These are structural environment corruptions)
+        # 1. NumPy/SciPy Version Conflict Fixes
         if "NumPy 1.x cannot be run in NumPy 2" in error_msg or "Failed to initialize NumPy" in error_msg:
+            self.log_step("Environment Error", "NumPy version conflict detected. Action: Downgrade NumPy.", "⚠️")
             self.log_step("Environment Error", "NumPy version conflict detected. Action: Downgrade NumPy.", "⚠️")
             self.log({"step": "error_recovery", "action": "downgrade_numpy"})
             try:
@@ -138,6 +170,7 @@ class MLEAgent:
             except subprocess.CalledProcessError:
                 return False
 
+        if "numpy.char" in error_msg:
         if "numpy.char" in error_msg:
             self.log_step("Environment Error", "SciPy/NumPy mismatch detected. Action: Reinstall SciPy.", "⚠️")
             try:
@@ -149,35 +182,27 @@ class MLEAgent:
         # ------------------------------------------------------------------
         # DYNAMIC DEPENDENCY PARSING
         # ------------------------------------------------------------------
-        # We look for patterns where the error message explicitly tells us what is missing.
-        # This handles "requires accelerate>=0.26", "pip install transformers", "No module named 'cv2'", etc.
-        
         missing_packages = set()
 
         # Pattern 1: Explicit suggestion to run pip install
-        # Matches: "run `pip install accelerate`", "Please install `transformers[torch]`"
         pip_matches = re.findall(r"pip install\s+([a-zA-Z0-9_\-\[\]]+)", error_msg)
         for m in pip_matches:
-            # Clean flags like -U or --upgrade if they were caught
             clean_pkg = m.split()[0]
             missing_packages.add(clean_pkg)
 
         # Pattern 2: Version requirements
-        # Matches: "requires accelerate>=0.26.0", "requires protobuf<4.0"
         req_matches = re.findall(r"requires\s+([a-zA-Z0-9_\-]+)(?:[><=]=?[\d\.]+)", error_msg)
         missing_packages.update(req_matches)
 
         # Pattern 3: Standard ModuleNotFoundError
-        # Matches: "No module named 'cv2'", "No module named 'blobs'"
         mod_matches = re.findall(r"No module named '([a-zA-Z0-9_\-]+)'", error_msg)
         missing_packages.update(mod_matches)
         
         # Pattern 4: Generic "requires the X library"
-        # Matches: "requires the beautifulsoup4 library"
         lib_matches = re.findall(r"requires the ([a-zA-Z0-9_\-]+) library", error_msg)
         missing_packages.update(lib_matches)
 
-        # Filter out common false positives (like 'numpy' which we handle separately, or local files)
+        # Filter out common false positives
         missing_packages = {pkg for pkg in missing_packages if "numpy" not in pkg and "mlebench" not in pkg}
 
         if not missing_packages:
@@ -186,15 +211,8 @@ class MLEAgent:
         # ------------------------------------------------------------------
         # EXECUTE RECOVERY
         # ------------------------------------------------------------------
-        # Pick the most specific package. Usually, if 'pip install' is suggested, that's the authority.
-        # Otherwise, rely on the mapping or the raw name.
-        
         for pkg_raw in missing_packages:
-            # 1. Clean version constraints if captured (e.g., "accelerate>=0.26" -> "accelerate")
             pkg_name = re.split(r"[><=]", pkg_raw)[0]
-            
-            # 2. Map to PyPI name if it's a known alias (cv2 -> opencv-python)
-            # You can keep adding to package_mapping, but if it's not there, we try the raw name.
             pkg_to_install = self.package_mapping.get(pkg_name, pkg_name)
 
             print(f"[WARN] Dynamic Dependency Detection: Found '{pkg_raw}'. Installing '{pkg_to_install}'...")
@@ -202,16 +220,16 @@ class MLEAgent:
             self.log({"step": "error_recovery", "missing": pkg_raw, "installing": pkg_to_install})
 
             try:
-                # We install exactly what was requested (including [torch] extras if present)
                 subprocess.run(["uv", "pip", "install", pkg_to_install], check=True)
                 
-                # Special Handling: If we installed 'accelerate', we often need to update transformers too
                 if "accelerate" in pkg_to_install:
                      subprocess.run(["uv", "pip", "install", "-U", "transformers"], check=False)
                 
                 importlib.invalidate_caches()
-                return True # Return True immediately after one successful fix to retry execution
+                return True 
             except subprocess.CalledProcessError:
+                print(f"[ERR] Failed to install {pkg_to_install}")
+                continue
                 print(f"[ERR] Failed to install {pkg_to_install}")
                 continue
 
@@ -269,9 +287,6 @@ class MLEAgent:
 
         return repo_root, yaml.safe_load(open(config_path))
 
-    def get_hardware_profile(self):
-        return {} 
-
     def load_module_from_path(self, module_path_str):
         module_name_full, fn_name = module_path_str.split(":")
         try:
@@ -310,7 +325,6 @@ class MLEAgent:
         print("[1/5] Analyzing Task...")
         metadata = collect_dataset_metadata(self.prepared_public)
         
-        # Log the description text
         self.log_step("Task Analysis", 
                       f"Reading dataset description and metadata.\n**Description Snippet:**\n_{metadata.get('description', '')[:200]}..._", 
                       "📚")
@@ -330,20 +344,12 @@ class MLEAgent:
             metadata, self.competition_id, modality_info['task_type'], modality_info['modality']
         ))
         
-        # ------------------------------------------------------------------
-        # FIX: TRUST THE RETRIEVED METRIC DIRECTION
-        # ------------------------------------------------------------------
-        # Previous logic blindly assumed classification = maximize. 
-        # But Spooky Author (LogLoss) requires minimization.
-        # We now prioritize the Researcher's findings.
-        
         extracted_direction = retrieval_data.get("metric_direction", "").lower().strip()
         
         if extracted_direction in ["minimize", "maximize"]:
             metric_dir = extracted_direction
             print(f"      Metric Goal: {metric_dir.upper()} (determined via Research/Web Search)")
         else:
-            # Fallback defaults if Research failed to identify metric
             task = modality_info["task_type"]
             if task in ["regression", "seq2seq"]:
                 metric_dir = "minimize"
@@ -361,18 +367,13 @@ class MLEAgent:
         # --- 3. TOURNAMENT ---
         print("[3/5] Candidate Tournament...")
         
-        # FIX: Increase Timeout to 30 minutes (1800s)
         CANDIDATE_TIMEOUT = 1800 
         
         best_candidate = None
         best_code = None
         
         is_minimizing = (metric_dir == "minimize")
-        
-        if is_minimizing:
-            best_score = float('inf')
-        else:
-            best_score = -float('inf')
+        best_score = float('inf') if is_minimizing else -float('inf')
         
         for i, cand in enumerate(candidates):
             cand_name = cand['model_name']
@@ -380,38 +381,33 @@ class MLEAgent:
             
             print(f"      Evaluating Candidate {i+1}: {cand_name}...")
             
-            # Log the specific plan for this candidate
             self.log_step(f"Design: Candidate {i+1}", 
                           f"**Model:** {cand_name}\n**Reasoning:** {cand_reasoning}\n**Library:** {cand['library']}", 
                           "📝")
 
             path = self.output_dir / f"candidate_{i}.py"
+            # --- PASS HARDWARE STATS ---
             code = asyncio.run(generate_candidate_script(
-                cand, modality_info, metadata, self.prepared_public, self.seed
+                cand, modality_info, metadata, self.prepared_public, self.seed,
+                hardware_stats=self.hardware
             ))
             path.write_text(code)
             
             self.log_step(f"Implementation: Candidate {i+1}", f"Generated training script for {cand_name}.", "💻", code=code)
 
-            # PASS INCREASED TIMEOUT HERE
             score = self.execute_candidate_robust(path, timeout=CANDIDATE_TIMEOUT)
             print(f"      -> Score: {score}")
             
             self.log_step(f"Evaluation: Candidate {i+1}", f"Training finished. **Score:** {score}", "📊")
             
-            # SELECTION LOGIC
             if score is not None:
                 if best_candidate is None:
                     best_score = score
                     best_candidate = cand
-                    best_code = path.read_text() # Capture fixed code
+                    best_code = path.read_text()
                     print(f"      [NEW LEADER] Score: {best_score}")
                 else:
-                    if is_minimizing:
-                        better = score < best_score
-                    else:
-                        better = score > best_score
-                        
+                    better = (score < best_score) if is_minimizing else (score > best_score)
                     if better:
                         print(f"      [NEW LEADER] {score} is better than {best_score}")
                         best_score = score
@@ -425,7 +421,7 @@ class MLEAgent:
             try:
                 best_code = self.output_dir.joinpath("candidate_0.py").read_text()
             except:
-                best_code = asyncio.run(generate_candidate_script(best_candidate, modality_info, metadata, self.prepared_public, self.seed))
+                best_code = asyncio.run(generate_candidate_script(best_candidate, modality_info, metadata, self.prepared_public, self.seed, hardware_stats=self.hardware))
 
         print(f"[WINNER] {best_candidate['model_name']} (Score: {best_score})")
         self.log_step("Tournament Winner", f"Selected strategy: **{best_candidate['model_name']}** with score {best_score}", "🏆")
@@ -456,16 +452,11 @@ class MLEAgent:
                     path = self.output_dir / script_name
                     path.write_text(refined_code)
                     
-                    # PASS INCREASED TIMEOUT HERE AS WELL
                     score = self.execute_candidate_robust(path, timeout=CANDIDATE_TIMEOUT)
                     print(f"      -> Score: {score}")
                     
                     if score is not None:
-                        if is_minimizing:
-                            better = score < best_score
-                        else:
-                            better = score > best_score
-                            
+                        better = (score < best_score) if is_minimizing else (score > best_score)
                         if better:
                             print(f"      [IMPROVEMENT] New Best Score: {score}")
                             self.log_step("Refinement Success", f"Refinement improved score to {score}.", "✅")
@@ -487,8 +478,10 @@ class MLEAgent:
         
         if best_code is None: best_code = ""
         
+        # --- PASS HARDWARE STATS ---
         final_code = asyncio.run(generate_final_script(
-            best_candidate, best_code, modality_info, metadata, self.prepared_public, self.seed
+            best_candidate, best_code, modality_info, metadata, self.prepared_public, self.seed,
+            hardware_stats=self.hardware
         ))
         final_path.write_text(final_code)
         
@@ -509,6 +502,7 @@ class MLEAgent:
     def execute_candidate_robust(self, script_path, timeout=600):
         # Allow up to 10 repair attempts per candidate
         max_retries = 10
+        previous_errors = []
 
         for attempt in range(max_retries):
             start_time = time.time()
@@ -551,6 +545,8 @@ class MLEAgent:
                 # 3. Failure Handling
                 print(f"      [WARN] Crash detected (Attempt {attempt+1}/{max_retries}). Analyzing...")
                 self.log_step(f"Crash Detected (Attempt {attempt+1})", "Script crashed. Analyzing logs...", "💥", output=full_log[-1000:])
+                
+                previous_errors.append(full_log[-1000:])
 
                 # A. Dependency Fix?
                 if self._handle_execution_error(full_log):
@@ -562,8 +558,8 @@ class MLEAgent:
                 print(f"      [INFO] Applying AI Code Fix...")
                 try:
                     current_code = script_path.read_text()
-                    # Call the fixer we imported
-                    fixed_code = asyncio.run(fix_training_script_llm(current_code, full_log))
+                    # Call the fixer we imported WITH MEMORY
+                    fixed_code = asyncio.run(fix_training_script_llm(current_code, full_log, history=previous_errors))
                     script_path.write_text(fixed_code)
                     self.log_step("AI Repair", "Applied LLM-based code fix to resolve crash.", "🚑", code=fixed_code)
                     continue # Retry with new code
@@ -584,6 +580,7 @@ class MLEAgent:
         
         start_time = time.time()
         max_retries = 10 
+        previous_errors = []
         
         for attempt in range(max_retries):
             with open(self.output_dir / f"log_final_{attempt}.txt", "w") as logf:
@@ -622,6 +619,7 @@ class MLEAgent:
                     # 2. Failure Handling
                     err_msg = "".join(full_log)
                     self.log_step(f"Final Train Crash (Attempt {attempt})", "Final training script crashed.", "💥", output=err_msg[-500:])
+                    previous_errors.append(err_msg[-1000:])
                     
                     # A. Dependency Fix?
                     if self._handle_execution_error(err_msg):
@@ -630,7 +628,8 @@ class MLEAgent:
                     
                     # B. Code Logic Fix (LLM)
                     print(f"[WARN] Attempt {attempt} failed. Retrying with AI Fix...")
-                    new_code = asyncio.run(fix_training_script_llm(script_path.read_text(), err_msg))
+                    # Call fixer WITH MEMORY
+                    new_code = asyncio.run(fix_training_script_llm(script_path.read_text(), err_msg, history=previous_errors))
                     script_path.write_text(new_code)
                     self.log_step("Final Repair", "Applying AI repair to final script.", "🚑")
                     
@@ -688,22 +687,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--competition", required=True)
     parser.add_argument("-o", "--output", default="runs")
-
-    # This now means NUMBER OF SEEDS, not a single seed value.
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=1,
-        help="Number of seeds to run. Example: --seed 3 runs seeds 42, 43, 44."
-    )
+    parser.add_argument("--seed", type=int, default=1, help="Number of seeds to run.")
     args = parser.parse_args()
 
-    # Build seed list 42, 43, 44, ...
-    base_seed = 42
+    base_seed = 43
     seeds_to_run = [base_seed + i for i in range(args.seed)]
     print(f"[INFO] Running seeds: {seeds_to_run}")
 
-    # Track all run directories for appending to JSONL
     all_run_dirs = []
 
     for s in seeds_to_run:
@@ -714,14 +704,10 @@ if __name__ == "__main__":
         agent = MLEAgent(args.competition, args.output, s)
         agent.run()
 
-        # Find latest run directory created by this seed
         run_dirs = sorted(Path(args.output).glob("*"), key=lambda p: p.stat().st_mtime)
         latest_run = run_dirs[-1]
         all_run_dirs.append(latest_run)
 
-    # ------------------------------------------------------------
-    # Append all submissions from all seeds into ONE JSONL file
-    # ------------------------------------------------------------
     jsonl_path = Path(args.output) / "submissions.jsonl"
     print(f"[INFO] Appending submission entries to: {jsonl_path}")
 
