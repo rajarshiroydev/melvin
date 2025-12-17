@@ -2,6 +2,7 @@ import os
 import json
 import zipfile
 import glob
+import re
 from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
@@ -94,6 +95,95 @@ def profile_data_complexity(df, public_dir):
     return stats
 
 # ---------------------------------------------------------
+# UNSTRUCTURED DATA NORMALIZER (NEW LOGIC)
+# ---------------------------------------------------------
+def normalize_unstructured_dataset(public_dir: Path):
+    """
+    If no CSVs are found, this scans directories to create 'synthetic' 
+    generated_train.csv and generated_test.csv by inferring labels.
+    """
+    print("[INFO] No CSVs found. Attempting to normalize unstructured data...")
+
+    # 1. Find Directories
+    dirs = [d for d in public_dir.iterdir() if d.is_dir()]
+    train_dir = next((d for d in dirs if "train" in d.name.lower()), None)
+    test_dir = next((d for d in dirs if "test" in d.name.lower()), None)
+
+    if not train_dir:
+        return None, None 
+
+    # 2. Scan Train Files
+    exts = {".jpg", ".png", ".jpeg", ".tif", ".tiff", ".wav", ".mp3", ".aif", ".aiff", ".flac", ".ogg"}
+    train_files = []
+    for p in train_dir.rglob("*"):
+        if p.suffix.lower() in exts:
+            train_files.append(p)
+
+    if not train_files:
+        return None, None
+
+    print(f"       Found {len(train_files)} raw training files in {train_dir.name}")
+
+    # 3. Infer Labels
+    data = []
+    # Strategy A: Filename Suffix (Whale Challenge: clip_0.aif, clip_1.aif)
+    has_suffix_label = any(re.search(r"_([01])\.", f.name) for f in train_files[:10])
+    # Strategy B: Subfolder Name (ImageNet: train/dog/x.jpg)
+    has_folder_label = any(f.parent.name != train_dir.name for f in train_files[:10])
+
+    for f in train_files:
+        label = None
+        if has_suffix_label:
+            match = re.search(r"_([01])\.", f.name)
+            if match:
+                label = int(match.group(1))
+        elif has_folder_label:
+            label = f.parent.name
+        
+        data.append({
+            "filepath": str(f.absolute()),
+            "filename": f.name,
+            "label": label if label is not None else -1
+        })
+    
+    df_train = pd.DataFrame(data)
+    gen_train_path = public_dir / "generated_train.csv"
+    df_train.to_csv(gen_train_path, index=False)
+    print(f"       Generated {gen_train_path.name}")
+
+    # 4. Scan Test Files
+    gen_test_path = None
+    if test_dir:
+        test_files = []
+        for p in test_dir.rglob("*"):
+            if p.suffix.lower() in exts:
+                test_files.append(p)
+        
+        if test_files:
+            test_data = []
+            for f in test_files:
+                test_data.append({
+                    "filepath": str(f.absolute()),
+                    "id": f.name # Default ID to filename
+                })
+            
+            df_test = pd.DataFrame(test_data)
+            gen_test_path = public_dir / "generated_test.csv"
+            df_test.to_csv(gen_test_path, index=False)
+            print(f"       Generated {gen_test_path.name}")
+
+            # 5. Synthetic Sample Submission
+            if not list(public_dir.glob("*sample_submission*.csv")):
+                sub_df = pd.DataFrame({
+                    "id": df_test["id"],
+                    "prediction": 0
+                })
+                sub_path = public_dir / "generated_sample_submission.csv"
+                sub_df.to_csv(sub_path, index=False)
+
+    return gen_train_path.name, (gen_test_path.name if gen_test_path else None)
+
+# ---------------------------------------------------------
 # SMART FILE DETECTOR & EXTRACTOR
 # ---------------------------------------------------------
 
@@ -124,24 +214,27 @@ def find_dataset_files(public_dir: Path):
     # Force glob to re-scan directory after potential extraction
     files = [f.name for f in public_dir.glob("*.csv")]
     
-    train_file = "train.csv"
-    test_file = "test.csv"
+    train_file = None
+    test_file = None
     
+    # Filter out sample submissions and previously generated files to find originals first
+    candidates = [f for f in files if "sample" not in f.lower() and "generated" not in f.lower()]
+
     # 1. Look for 'train'
-    train_candidates = [f for f in files if "train" in f.lower() and "sample" not in f.lower()]
+    train_candidates = [f for f in candidates if "train" in f.lower()]
     if train_candidates:
         train_candidates.sort(key=lambda x: (public_dir / x).stat().st_size, reverse=True)
         train_file = train_candidates[0]
         
     # 2. Look for 'test'
-    test_candidates = [f for f in files if "test" in f.lower() and "sample" not in f.lower()]
+    test_candidates = [f for f in candidates if "test" in f.lower()]
     if test_candidates:
         test_candidates.sort(key=lambda x: (public_dir / x).stat().st_size, reverse=True)
         test_file = test_candidates[0]
     
     # Fallback for test
     if not test_candidates and train_file:
-        others = [f for f in files if f != train_file and "sample" not in f.lower()]
+        others = [f for f in candidates if f != train_file]
         if others:
              others.sort(key=lambda x: (public_dir / x).stat().st_size, reverse=True)
              test_file = others[0]
@@ -159,6 +252,11 @@ def collect_dataset_metadata(public_dir: Path):
     # Detect actual filenames
     train_fname, test_fname = find_dataset_files(public_dir)
     
+    # --- STEP 1: HANDLE UNSTRUCTURED DATA (NEW) ---
+    if not train_fname:
+        train_fname, test_fname = normalize_unstructured_dataset(public_dir)
+    # ----------------------------------------------
+
     # --- NEW: DETECT SAMPLE SUBMISSION ---
     # We look for files with "sample" and "submission" in the name
     files = [f.name for f in public_dir.glob("*.csv")]
@@ -168,11 +266,8 @@ def collect_dataset_metadata(public_dir: Path):
     subs = [f for f in files if "sample" in f.lower() and "submission" in f.lower()]
     if subs:
         sample_sub_fname = subs[0]
-    else:
-        # Fallback: just "submission" (rare but possible)
-        subs = [f for f in files if "submission" in f.lower()]
-        if subs:
-            sample_sub_fname = subs[0]
+    elif [f for f in files if "submission" in f.lower()]: 
+        sample_sub_fname = [f for f in files if "submission" in f.lower()][0]
 
     train_path = public_dir / train_fname if train_fname else None
     test_path = public_dir / test_fname if test_fname else None
@@ -216,7 +311,7 @@ def collect_dataset_metadata(public_dir: Path):
     # Row estimation
     num_train_rows = 0
     try:
-        if train_path.exists():
+        if train_path and train_path.exists():
             with open(train_path, "rb") as f:
                 num_train_rows = max(0, sum(1 for _ in f) - 1)
     except:
@@ -241,7 +336,7 @@ def collect_dataset_metadata(public_dir: Path):
         "complexity": complexity_stats,
         "directory_files": [p.name for p in public_dir.iterdir()],
         "audio_dirs": audio_dirs,
-        "has_audio": len(audio_dirs) > 0,
+        "has_filepath_col": "filepath" in df_train.columns # Key flag for Code Gen
     }
 
     return metadata
@@ -255,8 +350,9 @@ class ModalityState(dict):
 
 def llm_modality_detector(state: ModalityState):
     metadata = state["metadata"]
-    if metadata.get("has_audio", False):
-        metadata["forced_modality_hint"] = "audio"
+    # Check for Audio/Image signals including generated filepath column
+    if metadata.get("has_audio", False) or metadata.get("audio_dirs") or metadata.get("has_filepath_col", False):
+        metadata["forced_modality_hint"] = "audio/image"
 
     prompt = f"""
     You are an ML engineering agent.

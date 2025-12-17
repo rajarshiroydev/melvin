@@ -171,7 +171,6 @@ class MLEAgent:
                 return False
 
         if "numpy.char" in error_msg:
-        if "numpy.char" in error_msg:
             self.log_step("Environment Error", "SciPy/NumPy mismatch detected. Action: Reinstall SciPy.", "⚠️")
             try:
                 subprocess.run(["uv", "pip", "install", "--force-reinstall", "scipy"], check=True)
@@ -690,7 +689,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=1, help="Number of seeds to run.")
     args = parser.parse_args()
 
-    base_seed = 43
+    base_seed = 42
     seeds_to_run = [base_seed + i for i in range(args.seed)]
     print(f"[INFO] Running seeds: {seeds_to_run}")
 

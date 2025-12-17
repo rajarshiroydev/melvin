@@ -45,7 +45,9 @@ CANDIDATE_PROMPT = """
     TASK: {task_type}
     METADATA: {metadata_json}
 
-    Your goal: Write a Python Training Script to EVALUATE this specific strategy.
+    UNSTRUCTURED DATA HANDLING:
+    {unstructured_hint}
+
     Your goal: Write a Python Training Script to EVALUATE this specific strategy.
 
     CRITICAL CONSTRAINTS (SPEED IS #1):
@@ -123,12 +125,36 @@ FINAL_TRAIN_PROMPT = """
             
         SUBMISSION:
             Predict on `TEST_PATH`.
-            **CRITICAL**: Load `SAMPLE_SUBMISSION_PATH` to check ID column name and Dtypes.
+            **CRITICAL**: Load `SAMPLE_SUBMISSION_PATH` as the SOURCE OF TRUTH.
+            - The submission file MUST have exactly the same number of rows and same order as `SAMPLE_SUBMISSION_PATH`.
+            - Do not rely solely on the generated test file count.
             Ensure your submission.csv matches {sample_sub_path} format exactly.
             Save to submission.csv.
             
     Return ONLY valid Python code.
     """
+
+def get_unstructured_hint(metadata):
+    if metadata.get("has_filepath_col"):
+        return """
+        ** ATTENTION: UNSTRUCTURED DATA DETECTED **
+        - The CSVs contain a 'filepath' column pointing to raw media files.
+        - YOU MUST IMPLEMENT A CUSTOM DATASET CLASS.
+        - Load raw files inside `__getitem__`.
+        - For Audio: use librosa/torchaudio. For Images: use PIL.
+
+        ** CRITICAL FOR INFERENCE (TESTING) **:
+        1. **SOURCE OF TRUTH**: Use `SAMPLE_SUBMISSION_PATH` to define the test set items, NOT `TEST_PATH`.
+        2. **DYNAMIC PATHS**: 
+           - Read `sample_submission.csv` to get the list of IDs/filenames.
+           - Infer the directory from `TEST_PATH` (e.g. `test_dir = os.path.dirname(df_test['filepath'].iloc[0])`).
+           - Construct filepaths dynamically: `path = os.path.join(test_dir, row['clip'])`.
+        3. **MISSING FILES**:
+           - If a file listed in sample_submission is missing from disk, YOU MUST NOT CRASH.
+           - **Catch the Exception** and return a zero-array (silence/black image).
+        """
+    return ""
+
 
 async def generate_candidate_script(candidate_info, modality_info, metadata, dataset_dir, seed=42, hardware_stats=None):
     if hardware_stats is None: hardware_stats = {"vram_gb": 16, "gpu_name": "Unknown"}
@@ -156,6 +182,7 @@ async def generate_candidate_script(candidate_info, modality_info, metadata, dat
         dataset_dir=str(dataset_dir),
         target_col=modality_info.get("target_col"),
         task_type=modality_info.get("task_type"),
+        unstructured_hint=get_unstructured_hint(metadata),
         metadata_json=json.dumps(metadata),
         seed=seed,
         vram_gb=hardware_stats.get("vram_gb", 0),
@@ -198,6 +225,7 @@ async def generate_final_script(best_candidate, prototype_code, modality_info, m
         target_col=modality_info.get("target_col"),
         task_type=modality_info.get("task_type"),
         metadata_json=json.dumps(metadata),
+        unstructured_hint=get_unstructured_hint(metadata),
         seed=seed,
         vram_gb=hardware_stats.get("vram_gb", 0),
         gpu_name=hardware_stats.get("gpu_name", "CPU")
